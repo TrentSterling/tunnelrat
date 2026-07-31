@@ -1,64 +1,35 @@
-// enemies.js : drones (patrol/chase/strafe), wall turrets, and the reactor boss.
+// enemies.js : class-driven robot AI. Mobile classes (grunt, claw, hulk, sniper) share
+// one movement machine with per-class parameters from config.enemies; wall turrets and
+// the reactor boss are stationary. Bodies come from robots.js (procgen low-poly).
 //
-// CONTRACT (implement exactly):
-//
+// CONTRACT:
 // class EnemyManager {
 //   constructor(scene, config)
-//   populate(graph, field, projectiles, seed, depth)
-//     // clears previous, spawns dronesBase + 2*depth drones, turretsBase + depth
-//     // turrets, 1 reactor in the reactor room. Uses makeRng(seed ^ 0xBEEF).
-//     // Drones spawn at random non-spawn, non-exit nodes (jitter inside room, keep
-//     //   field.sample < -drone.radius). Never within 2 hops of spawn node.
-//     // Turrets: pick random room nodes (not spawn/exit), raycast from node center in a
-//     //   random direction to a wall (field.raycast), plant on hit point, oriented
-//     //   with +Y along the collision normal.
-//     // Reactor: at reactor node center; big emissive octahedron + spin.
-//   update(dt, ship, field, graph)   // all AI; fires via the ProjectileSystem given in populate
-//   list() -> array of { pos:Vector3, radius, alive, takeDamage(n) }  // includes reactor
-//     while alive; the reactor entry additionally has isReactor:true (main.js debug uses it)
+//   populate(graph, field, projectiles, seed, depth)   // spawn table config.enemies.spawns
+//   update(dt, ship, field, graph)
+//   list() -> [{ pos, radius, alive, takeDamage(n), isReactor? }]
 //   reactorAlive: boolean
-//   onReactorDestroyed: null | () => void
-//   onEnemyKilled: null | (enemy) => void   // for sfx/explosion fx (main wires)
+//   onReactorDestroyed / onEnemyKilled / onShipMelee(damage) callbacks (main wires)
 //   clear()
 // }
 //
-// Drone AI (state machine per drone):
-//   PATROL: drift between its node and random neighbors (findPath not needed: pick
-//     random neighbor node, steer to its center, repeat). Speed 40% of max.
-//   CHASE: trigger when dist(ship) < sightRange AND field.raycast(dronePos ->
-//     dirToShip, dist) === -1 (clear LOS). A* / BFS via findPath(graph,
-//     nearestNodeId(drone), nearestNodeId(ship)) every ~1s (stagger by drone index,
-//     NOT all on the same frame); steer toward next path node center, or straight at
-//     ship when LOS is clear. Maintain 12-20m preferred range, strafe perpendicular
-//     (sin of per-drone phase) while in range.
-//   FIRE: in CHASE with LOS and dist < fireRange, cooldown timer: spawn 'enemyBolt'
-//     aimed at ship.pos + ship.velocity * (dist/boltSpeed) * 0.5 (half lead: dodgeable).
-//   Movement is velocity-based with accel toward desired dir, damping 2.0/s; collide
-//   vs field with same push-out trick as ship (1 iteration is fine).
-//   Visuals: cheap geometric hulls, MeshLambertMaterial flat colors + small emissive;
-//   e.g. octahedron body + ring. Face velocity direction.
-//
-// Turret AI: static; if LOS to ship and dist < fireRange: slerp aim, fire on cooldown.
-//   Visual: short cylinder base + box barrel, barrel lookAt ship when active.
-//
-// Reactor: spins; if LOS and dist < fireRange fires 'reactorBolt' at ship (no lead)
-//   on cooldown. takeDamage flashes its emissive. On death: alive=false, call
-//   onReactorDestroyed(), leave a dimming husk mesh.
-//
-// AMBIGUITY RESOLUTION: findPath()'s allowLocked defaults false (used for mission
-// solvability checks). The locked door only blocks the ship (see gamestate.js: "bolts
-// pass, only the ship is blocked" -- and it isn't carved into the density field at
-// all), so enemy pathfinding calls findPath(..., true): drones are physically free to
-// route through the door tunnel exactly like the field already allows.
+// Class behaviors:
+//   grunt : patrol -> chase, holds 12-20m band, strafes, single half-lead bolts
+//   hulk  : slow bruiser, 3-bolt bursts with slight spread, faces the ship while firing
+//   sniper: hangs back 28-44m, backs off if pressed, fast full-lead sniperBolt
+//   claw  : no gun; sprints straight in and shreds on contact (melee + knockback)
+//   turret: wall-planted, slerp aim + cooldown fire
+//   reactor: fires reactorBolt, flashes on damage, death triggers escape
+// Enemy pathfinding uses findPath(..., true): the locked door only blocks the ship.
 import * as THREE from 'three';
 import { makeRng, randRange, pick } from './util/rng.js';
 import { findPath, nearestNodeId } from './procgen/graph.js';
+import { buildRobot } from './robots.js';
 
 const UP = new THREE.Vector3(0, 1, 0);
 const UNIT_Z = new THREE.Vector3(0, 0, 1);
+const SHIP_RADIUS_PAD = 1.5; // approx ship collision radius for melee contact checks
 
-// module-scope scratch: reused across every drone/turret/reactor update to avoid
-// per-frame allocation churn (enemy counts are small but this is still cheap hygiene).
 const _toShip = new THREE.Vector3();
 const _dirToShip = new THREE.Vector3();
 const _normal = new THREE.Vector3();
@@ -72,6 +43,8 @@ const _faceDir = new THREE.Vector3();
 const _rand3 = new THREE.Vector3();
 const _q = new THREE.Quaternion();
 const _aimQuat = new THREE.Quaternion();
+const _box = new THREE.Box3();
+const _boxSize = new THREE.Vector3();
 
 function randomUnitVector(rng, out) {
   const z = randRange(rng, -1, 1);
@@ -79,6 +52,15 @@ function randomUnitVector(rng, out) {
   const r = Math.sqrt(Math.max(0, 1 - z * z));
   out.set(r * Math.cos(t), r * Math.sin(t), z);
   return out;
+}
+
+// scale a robot body so its largest extent matches the class collision diameter
+// (a touch bigger reads better; Descent robots always looked chunkier than their hitbox)
+function fitToRadius(group, radius) {
+  _box.setFromObject(group);
+  _box.getSize(_boxSize);
+  const maxDim = Math.max(_boxSize.x, _boxSize.y, _boxSize.z, 0.001);
+  group.scale.setScalar((radius * 2.4) / maxDim);
 }
 
 export class EnemyManager {
@@ -90,7 +72,7 @@ export class EnemyManager {
     this.root.name = 'enemies';
     scene.add(this.root);
 
-    this.drones = [];
+    this.bots = [];
     this.turrets = [];
     this.reactor = null;
     this.reactorAlive = false;
@@ -103,27 +85,7 @@ export class EnemyManager {
 
     this.onReactorDestroyed = null;
     this.onEnemyKilled = null;
-
-    this._buildAssets();
-  }
-
-  _buildAssets() {
-    const c = this.config;
-
-    const dr = c.enemies.drone.radius;
-    this.droneGeo = new THREE.OctahedronGeometry(dr, 0);
-    this.droneRingGeo = new THREE.TorusGeometry(dr * 1.35, dr * 0.14, 6, 14);
-    this.droneMat = new THREE.MeshLambertMaterial({ color: 0x8fa0ff, emissive: 0x1c2050 });
-    this.droneRingMat = new THREE.MeshLambertMaterial({ color: 0xff5a3b, emissive: 0x401208 });
-
-    const tr = c.enemies.turret.radius;
-    this.turretBaseGeo = new THREE.CylinderGeometry(tr * 0.95, tr * 1.15, tr * 0.55, 8);
-    this.turretBarrelGeo = new THREE.BoxGeometry(tr * 0.32, tr * 0.32, tr * 1.5);
-    this.turretBaseMat = new THREE.MeshLambertMaterial({ color: 0x555a66, emissive: 0x0a0a10 });
-    this.turretBarrelMat = new THREE.MeshLambertMaterial({ color: 0xff5a3b, emissive: 0x401208 });
-
-    const rr = c.enemies.reactor.radius;
-    this.reactorGeo = new THREE.OctahedronGeometry(rr, 0);
+    this.onShipMelee = null;
   }
 
   populate(graph, field, projectiles, seed, depth) {
@@ -137,7 +99,6 @@ export class EnemyManager {
     this.rng = rng;
     const cfgE = this.config.enemies;
 
-    // BFS hop count from spawn (graph.neighbors already includes locked edges).
     const hops = new Map();
     hops.set(graph.spawnId, 0);
     const q = [graph.spawnId];
@@ -149,34 +110,42 @@ export class EnemyManager {
       }
     }
 
-    let droneNodes = graph.nodes.filter((n) =>
+    let botNodes = graph.nodes.filter((n) =>
       n.id !== graph.spawnId && n.id !== graph.exitId && (hops.get(n.id) ?? 99) > 2);
-    if (droneNodes.length === 0) {
-      droneNodes = graph.nodes.filter((n) => n.id !== graph.spawnId && n.id !== graph.exitId);
+    if (botNodes.length === 0) {
+      botNodes = graph.nodes.filter((n) => n.id !== graph.spawnId && n.id !== graph.exitId);
     }
-    if (droneNodes.length === 0) droneNodes = graph.nodes.slice();
+    if (botNodes.length === 0) botNodes = graph.nodes.slice();
 
-    const droneCount = cfgE.dronesBase + 2 * depth;
-    for (let i = 0; i < droneCount; i++) {
-      const node = pick(rng, droneNodes);
-      this.drones.push(this._spawnDrone(node, i, droneCount, rng));
+    const extra = Math.max(0, depth - 1);
+    let spawnIndex = 0;
+    let totalMobile = 0;
+    for (const cls of ['grunt', 'claw', 'hulk', 'sniper']) {
+      totalMobile += cfgE.spawns[cls][0] + Math.floor(cfgE.spawns[cls][1] * extra);
+    }
+    for (const cls of ['grunt', 'claw', 'hulk', 'sniper']) {
+      const count = cfgE.spawns[cls][0] + Math.floor(cfgE.spawns[cls][1] * extra);
+      for (let i = 0; i < count; i++) {
+        const node = pick(rng, botNodes);
+        this.bots.push(this._spawnBot(cls, node, spawnIndex++, totalMobile, rng));
+      }
     }
 
     let turretNodes = graph.nodes.filter((n) => n.id !== graph.spawnId && n.id !== graph.exitId);
     if (turretNodes.length === 0) turretNodes = graph.nodes.slice();
-    const turretCount = cfgE.turretsBase + depth;
+    const turretCount = cfgE.spawns.turret[0] + Math.floor(cfgE.spawns.turret[1] * extra);
     for (let i = 0; i < turretCount; i++) {
       const node = pick(rng, turretNodes);
       this.turrets.push(this._spawnTurret(node, field, rng));
     }
 
     const reactorNode = this.nodeMap.get(graph.reactorId);
-    this.reactor = this._spawnReactor(reactorNode);
+    this.reactor = this._spawnReactor(reactorNode, rng);
     this.reactorAlive = true;
   }
 
-  _spawnDrone(node, index, totalCount, rng) {
-    const cfg = this.config.enemies.drone;
+  _spawnBot(classKey, node, index, totalCount, rng) {
+    const cfg = this.config.enemies[classKey];
     const pos = new THREE.Vector3();
     let placed = false;
     for (let tries = 0; tries < 20; tries++) {
@@ -187,32 +156,32 @@ export class EnemyManager {
     }
     if (!placed) pos.copy(node.pos);
 
-    const mesh = new THREE.Group();
-    const body = new THREE.Mesh(this.droneGeo, this.droneMat);
-    const ring = new THREE.Mesh(this.droneRingGeo, this.droneRingMat);
-    ring.rotation.x = Math.PI / 2;
-    mesh.add(body, ring);
-    mesh.position.copy(pos);
-    this.root.add(mesh);
+    const { group } = buildRobot(classKey, rng);
+    fitToRadius(group, cfg.radius);
+    group.position.copy(pos);
+    this.root.add(group);
 
     const neighbors = this.graph.neighbors.get(node.id) || [];
     const patrolTargetId = neighbors.length ? pick(rng, neighbors) : node.id;
 
     const entry = {
-      kind: 'drone',
+      kind: 'bot',
+      classKey,
       pos,
       radius: cfg.radius,
       hp: cfg.hp,
       alive: true,
-      mesh,
-      ring,
+      mesh: group,
       velocity: new THREE.Vector3(),
       state: 'patrol',
       patrolTargetId,
       currentPath: null,
       pathIndex: 1,
       repathTimer: (index / Math.max(1, totalCount)) * 1.0 + randRange(rng, 0, 0.3),
-      fireTimer: randRange(rng, 0, cfg.fireCooldown),
+      fireTimer: randRange(rng, 0, Math.max(0.5, cfg.fireCooldown || 1)),
+      burstLeft: 0,
+      burstTimer: 0,
+      meleeTimer: 0,
       strafePhase: randRange(rng, 0, Math.PI * 2),
       strafeSign: rng() < 0.5 ? -1 : 1,
     };
@@ -236,23 +205,15 @@ export class EnemyManager {
       pos.copy(node.pos).addScaledVector(dir, hitDist);
       field.collisionNormal(pos.x, pos.y, pos.z, normal);
     } else {
-      // No wall found after all tries (degenerate room): plant near the room edge
-      // along the last tried direction so the level never ends up with a missing turret.
       pos.copy(node.pos).addScaledVector(dir, node.radius * 0.9);
       normal.copy(dir).negate();
     }
 
-    const mesh = new THREE.Group();
-    const base = new THREE.Mesh(this.turretBaseGeo, this.turretBaseMat);
-    const head = new THREE.Group();
-    const barrel = new THREE.Mesh(this.turretBarrelGeo, this.turretBarrelMat);
-    barrel.position.z = cfg.radius * 0.7;
-    head.add(barrel);
-    head.position.y = cfg.radius * 0.35;
-    mesh.add(base, head);
-    mesh.position.copy(pos);
-    mesh.quaternion.setFromUnitVectors(UP, normal);
-    this.root.add(mesh);
+    const { group, refs } = buildRobot('turret', rng);
+    fitToRadius(group, cfg.radius);
+    group.position.copy(pos);
+    group.quaternion.setFromUnitVectors(UP, normal);
+    this.root.add(group);
 
     const entry = {
       kind: 'turret',
@@ -260,8 +221,8 @@ export class EnemyManager {
       radius: cfg.radius,
       hp: cfg.hp,
       alive: true,
-      mesh,
-      head,
+      mesh: group,
+      head: refs.head,
       normal: normal.clone(),
       fireTimer: randRange(rng, 0, cfg.fireCooldown),
     };
@@ -269,16 +230,14 @@ export class EnemyManager {
     return entry;
   }
 
-  _spawnReactor(node) {
+  _spawnReactor(node, rng) {
     const cfg = this.config.enemies.reactor;
-    const material = new THREE.MeshLambertMaterial({
-      color: this.config.colors.reactor,
-      emissive: this.config.colors.reactor,
-      emissiveIntensity: 1.1,
-    });
-    const mesh = new THREE.Mesh(this.reactorGeo, material);
-    mesh.position.copy(node.pos);
-    this.root.add(mesh);
+    const { group, refs } = buildRobot('reactor', rng);
+    fitToRadius(group, cfg.radius);
+    group.position.copy(node.pos);
+    const glow = new THREE.PointLight(0xff7a2f, 140, 50); // the reactor room runs hot
+    group.add(glow);
+    this.root.add(group);
 
     const entry = {
       kind: 'reactor',
@@ -287,8 +246,9 @@ export class EnemyManager {
       radius: cfg.radius,
       hp: cfg.hp,
       alive: true,
-      mesh,
-      material,
+      mesh: group,
+      material: refs.coreMat,
+      glow,
       fireTimer: cfg.fireCooldown * 0.5,
       flash: 0,
     };
@@ -307,6 +267,7 @@ export class EnemyManager {
         if (this.onReactorDestroyed) this.onReactorDestroyed();
       } else {
         this.root.remove(entry.mesh);
+        entry.mesh.traverse((o) => { if (o.isMesh) { o.geometry?.dispose(); o.material?.dispose(); } });
         if (this.onEnemyKilled) this.onEnemyKilled(entry);
       }
     }
@@ -318,9 +279,9 @@ export class EnemyManager {
     const shipPos = ship.object3d.position;
     const shipAlive = ship.alive;
 
-    for (let i = 0; i < this.drones.length; i++) {
-      const d = this.drones[i];
-      if (d.alive) this._updateDrone(d, dt, ship, shipPos, shipAlive, field, graph);
+    for (let i = 0; i < this.bots.length; i++) {
+      const b = this.bots[i];
+      if (b.alive) this._updateBot(b, dt, ship, shipPos, shipAlive, field, graph);
     }
     for (let i = 0; i < this.turrets.length; i++) {
       const t = this.turrets[i];
@@ -329,91 +290,119 @@ export class EnemyManager {
     if (this.reactor) this._updateReactor(this.reactor, dt, shipPos, shipAlive, field);
   }
 
-  _updateDrone(d, dt, ship, shipPos, shipAlive, field, graph) {
-    const cfg = this.config.enemies.drone;
+  _fireBolt(b, cfg, ship, shipPos, dist) {
+    const wcfg = this.config.weapons[cfg.bolt];
+    const leadT = (dist / wcfg.speed) * cfg.lead;
+    _leadPos.copy(shipPos).addScaledVector(ship.velocity, leadT);
+    _fireDir.copy(_leadPos).sub(b.pos).normalize();
+    if (b.classKey === 'hulk') { // slight burst spread so the wall of bolts is dodgeable
+      _fireDir.x += (this.rng() - 0.5) * 0.08;
+      _fireDir.y += (this.rng() - 0.5) * 0.08;
+      _fireDir.z += (this.rng() - 0.5) * 0.08;
+      _fireDir.normalize();
+    }
+    this.projectiles.spawn('enemy', b.pos, _fireDir, cfg.bolt);
+  }
 
-    _toShip.copy(shipPos).sub(d.pos);
+  _updateBot(b, dt, ship, shipPos, shipAlive, field, graph) {
+    const cfg = this.config.enemies[b.classKey];
+    const isMelee = !!cfg.melee;
+
+    _toShip.copy(shipPos).sub(b.pos);
     const dist = _toShip.length();
     let los = false;
     if (shipAlive && dist > 0.001) {
       _dirToShip.copy(_toShip).multiplyScalar(1 / dist);
-      los = field.raycast(d.pos, _dirToShip, dist) === -1;
+      los = field.raycast(b.pos, _dirToShip, dist) === -1;
     }
 
-    if (d.state === 'patrol') {
+    if (b.state === 'patrol') {
       if (shipAlive && dist < cfg.sightRange && los) {
-        d.state = 'chase';
-        d.repathTimer = 0;
+        b.state = 'chase';
+        b.repathTimer = 0;
       }
-    } else if (d.state === 'chase') {
+    } else if (b.state === 'chase') {
       if (!shipAlive || dist > cfg.sightRange * 1.4) {
-        d.state = 'patrol';
-        d.currentPath = null;
+        b.state = 'patrol';
+        b.currentPath = null;
       }
     }
 
     _desired.set(0, 0, 0);
     let targetSpeed = cfg.speed * 0.4;
+    let combatFacing = false;
 
-    if (d.state === 'patrol') {
-      const targetNode = this.nodeMap.get(d.patrolTargetId);
+    if (b.state === 'patrol') {
+      const targetNode = this.nodeMap.get(b.patrolTargetId);
       if (targetNode) {
-        const dNode = d.pos.distanceTo(targetNode.pos);
+        const dNode = b.pos.distanceTo(targetNode.pos);
         if (dNode < Math.max(3, targetNode.radius * 0.4)) {
           const neighbors = graph.neighbors.get(targetNode.id) || [];
-          d.patrolTargetId = neighbors.length ? pick(this.rng, neighbors) : targetNode.id;
+          b.patrolTargetId = neighbors.length ? pick(this.rng, neighbors) : targetNode.id;
         } else {
-          _desired.copy(targetNode.pos).sub(d.pos).normalize();
+          _desired.copy(targetNode.pos).sub(b.pos).normalize();
         }
       }
     } else {
       // CHASE
-      d.repathTimer -= dt;
-      if (d.repathTimer <= 0) {
-        d.repathTimer = 1.0;
-        const fromId = nearestNodeId(graph, d.pos);
+      b.repathTimer -= dt;
+      if (b.repathTimer <= 0) {
+        b.repathTimer = 1.0;
+        const fromId = nearestNodeId(graph, b.pos);
         const toId = nearestNodeId(graph, shipPos);
-        d.currentPath = findPath(graph, fromId, toId, true);
-        d.pathIndex = 1;
+        b.currentPath = findPath(graph, fromId, toId, true);
+        b.pathIndex = 1;
       }
-      d.strafePhase += dt;
+      b.strafePhase += dt;
 
       if (shipAlive && los && dist > 0.001) {
-        if (dist > 20) {
+        if (isMelee) {
+          // claw: no range band, no gun; run the target down
           _desired.copy(_dirToShip);
           targetSpeed = cfg.speed;
-        } else if (dist < 12) {
-          _desired.copy(_dirToShip).negate();
-          targetSpeed = cfg.speed;
+          b.meleeTimer -= dt;
+          if (dist < b.radius + SHIP_RADIUS_PAD + 0.6 && b.meleeTimer <= 0) {
+            b.meleeTimer = cfg.meleeCooldown;
+            if (this.onShipMelee) this.onShipMelee(cfg.melee);
+            ship.velocity.addScaledVector(_dirToShip, cfg.meleeKnock); // shove
+            b.velocity.addScaledVector(_dirToShip, -cfg.meleeKnock * 0.5); // recoil
+          }
         } else {
-          _perp.crossVectors(_dirToShip, UP);
-          if (_perp.lengthSq() < 1e-6) _perp.set(1, 0, 0); else _perp.normalize();
-          const sign = (Math.sin(d.strafePhase * 1.3) >= 0 ? 1 : -1) * d.strafeSign;
-          _desired.copy(_perp).multiplyScalar(sign);
-          targetSpeed = cfg.strafe;
-        }
+          if (dist > cfg.rangeFar) {
+            _desired.copy(_dirToShip);
+            targetSpeed = cfg.speed;
+          } else if (dist < cfg.rangeNear) {
+            _desired.copy(_dirToShip).negate();
+            targetSpeed = cfg.speed;
+          } else if (cfg.strafe > 0) {
+            _perp.crossVectors(_dirToShip, UP);
+            if (_perp.lengthSq() < 1e-6) _perp.set(1, 0, 0); else _perp.normalize();
+            const sign = (Math.sin(b.strafePhase * 1.3) >= 0 ? 1 : -1) * b.strafeSign;
+            _desired.copy(_perp).multiplyScalar(sign);
+            targetSpeed = cfg.strafe;
+          }
+          combatFacing = b.classKey === 'hulk' || b.classKey === 'sniper';
 
-        if (dist < cfg.fireRange) {
-          d.fireTimer -= dt;
-          if (d.fireTimer <= 0 && this.projectiles) {
-            d.fireTimer = cfg.fireCooldown;
-            const boltSpeed = this.config.weapons.enemyBolt.speed;
-            const leadT = (dist / boltSpeed) * 0.5;
-            _leadPos.copy(shipPos).addScaledVector(ship.velocity, leadT);
-            _fireDir.copy(_leadPos).sub(d.pos).normalize();
-            this.projectiles.spawn('enemy', d.pos, _fireDir, 'enemyBolt');
+          if (dist < cfg.fireRange && cfg.bolt) {
+            b.fireTimer -= dt;
+            if (b.fireTimer <= 0 && this.projectiles) {
+              b.fireTimer = cfg.fireCooldown;
+              this._fireBolt(b, cfg, ship, shipPos, dist);
+              b.burstLeft = cfg.burst - 1;
+              b.burstTimer = cfg.burstGap;
+            }
           }
         }
       } else {
         let followed = false;
-        if (d.currentPath && d.pathIndex < d.currentPath.length) {
-          const node = this.nodeMap.get(d.currentPath[d.pathIndex]);
+        if (b.currentPath && b.pathIndex < b.currentPath.length) {
+          const node = this.nodeMap.get(b.currentPath[b.pathIndex]);
           if (node) {
-            const dNode = d.pos.distanceTo(node.pos);
+            const dNode = b.pos.distanceTo(node.pos);
             if (dNode < Math.max(4, node.radius * 0.5)) {
-              d.pathIndex++;
+              b.pathIndex++;
             } else {
-              _desired.copy(node.pos).sub(d.pos).normalize();
+              _desired.copy(node.pos).sub(b.pos).normalize();
               followed = true;
               targetSpeed = cfg.speed;
             }
@@ -426,29 +415,42 @@ export class EnemyManager {
       }
     }
 
+    // finish an in-flight burst even if the band/LOS shifted a little this frame
+    if (b.burstLeft > 0 && shipAlive && this.projectiles) {
+      b.burstTimer -= dt;
+      if (b.burstTimer <= 0) {
+        b.burstLeft--;
+        b.burstTimer = cfg.burstGap;
+        if (los && dist > 0.001) this._fireBolt(b, cfg, ship, shipPos, dist);
+      }
+    }
+
     if (_desired.lengthSq() > 1e-8) {
-      d.velocity.addScaledVector(_desired, cfg.accel * dt);
+      b.velocity.addScaledVector(_desired, cfg.accel * dt);
     }
-    d.velocity.multiplyScalar(Math.max(0, 1 - 2.0 * dt));
-    const speedNow = d.velocity.length();
-    if (speedNow > targetSpeed) d.velocity.multiplyScalar(targetSpeed / speedNow);
+    b.velocity.multiplyScalar(Math.max(0, 1 - 2.0 * dt));
+    const speedNow = b.velocity.length();
+    if (speedNow > targetSpeed) b.velocity.multiplyScalar(targetSpeed / speedNow);
 
-    d.pos.addScaledVector(d.velocity, dt);
+    b.pos.addScaledVector(b.velocity, dt);
 
-    const s = field.sample(d.pos.x, d.pos.y, d.pos.z);
-    if (s > -d.radius) {
-      field.collisionNormal(d.pos.x, d.pos.y, d.pos.z, _normal);
-      d.pos.addScaledVector(_normal, s + d.radius);
-      const into = d.velocity.dot(_normal);
-      if (into < 0) d.velocity.addScaledVector(_normal, -into);
+    const s = field.sample(b.pos.x, b.pos.y, b.pos.z);
+    if (s > -b.radius) {
+      field.collisionNormal(b.pos.x, b.pos.y, b.pos.z, _normal);
+      b.pos.addScaledVector(_normal, s + b.radius);
+      const into = b.velocity.dot(_normal);
+      if (into < 0) b.velocity.addScaledVector(_normal, -into);
     }
 
-    d.mesh.position.copy(d.pos);
-    if (d.velocity.lengthSq() > 0.0025) {
-      _faceDir.copy(d.velocity).normalize();
-      d.mesh.quaternion.setFromUnitVectors(UNIT_Z, _faceDir);
+    b.mesh.position.copy(b.pos);
+    if (combatFacing && dist > 0.001) {
+      _aimQuat.setFromUnitVectors(UNIT_Z, _dirToShip);
+      b.mesh.quaternion.slerp(_aimQuat, Math.min(1, dt * 5));
+    } else if (b.velocity.lengthSq() > 0.0025) {
+      _faceDir.copy(b.velocity).normalize();
+      _aimQuat.setFromUnitVectors(UNIT_Z, _faceDir);
+      b.mesh.quaternion.slerp(_aimQuat, Math.min(1, dt * 6));
     }
-    d.ring.rotation.z += dt * 1.4;
   }
 
   _updateTurret(t, dt, shipPos, shipAlive, field) {
@@ -464,8 +466,6 @@ export class EnemyManager {
     const los = inRange && field.raycast(t.pos, _dirToShip, dist) === -1;
     if (!los) return;
 
-    // Aim: rotate the barrel head toward the ship. The head's local space is
-    // parented to the wall-mount rotation, so express the world aim dir locally first.
     _q.copy(t.mesh.quaternion).invert();
     _target.copy(_dirToShip).applyQuaternion(_q);
     _aimQuat.setFromUnitVectors(UNIT_Z, _target);
@@ -483,13 +483,14 @@ export class EnemyManager {
     const cfg = this.config.enemies.reactor;
 
     r.mesh.rotation.y += (r.alive ? 0.6 : 0.15) * dt;
-    r.mesh.rotation.x += (r.alive ? 0.25 : 0.05) * dt;
 
     if (r.flash > 0) r.flash = Math.max(0, r.flash - dt * 2.5);
     if (r.alive) {
       r.material.emissiveIntensity = 1.1 + r.flash * 2.5;
+      r.glow.intensity = 140 + r.flash * 180;
     } else {
       r.material.emissiveIntensity = Math.max(0, r.material.emissiveIntensity - dt * 0.6);
+      r.glow.intensity = Math.max(0, r.glow.intensity - dt * 70);
     }
 
     if (!r.alive || !shipAlive) return;
@@ -510,22 +511,23 @@ export class EnemyManager {
 
   list() {
     const out = [];
-    for (let i = 0; i < this.drones.length; i++) if (this.drones[i].alive) out.push(this.drones[i]);
+    for (let i = 0; i < this.bots.length; i++) if (this.bots[i].alive) out.push(this.bots[i]);
     for (let i = 0; i < this.turrets.length; i++) if (this.turrets[i].alive) out.push(this.turrets[i]);
     if (this.reactor) out.push(this.reactor);
     return out;
   }
 
   clear() {
-    for (let i = 0; i < this.drones.length; i++) this.root.remove(this.drones[i].mesh);
-    for (let i = 0; i < this.turrets.length; i++) this.root.remove(this.turrets[i].mesh);
-    if (this.reactor) {
-      this.root.remove(this.reactor.mesh);
-      this.reactor.material.dispose();
-    }
+    // robot bodies are per-instance geometry: dispose everything under root
+    this.root.traverse((o) => {
+      if (o.isMesh) {
+        o.geometry?.dispose();
+        o.material?.dispose();
+      }
+    });
     while (this.root.children.length) this.root.remove(this.root.children[0]);
 
-    this.drones = [];
+    this.bots = [];
     this.turrets = [];
     this.reactor = null;
     this.reactorAlive = false;

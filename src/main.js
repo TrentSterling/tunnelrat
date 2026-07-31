@@ -12,6 +12,8 @@ import { HUD } from './hud.js';
 import { Automap } from './automap.js';
 import { GameState } from './gamestate.js';
 import { sfx } from './sfx.js';
+import { buildRobot } from './robots.js';
+import { makeRng } from './util/rng.js';
 
 const app = document.getElementById('app');
 const loadingEl = document.getElementById('loading');
@@ -100,6 +102,12 @@ function loadLevel(newSeed, newDepth) {
     enemies.populate(level.graph, level.field, projectiles, seed, depth);
     enemies.onReactorDestroyed = onReactorDestroyed;
     enemies.onEnemyKilled = () => sfx.play('explode');
+    enemies.onShipMelee = (dmg) => {
+      ship.takeDamage(dmg);
+      hud.flashDamage();
+      sfx.play('hitWall');
+      shake = Math.min(1.2, shake + CONFIG.game.hitShake * 1.5);
+    };
 
     if (!gamestate) gamestate = new GameState(scene, CONFIG);
     gamestate.startLevel(level.graph, level.field, depth);
@@ -233,6 +241,24 @@ window.TR = {
     },
     god() { ship.takeDamage = () => false; ship.spendEnergy = () => true; },
     toggleMap() { automap.toggle(); },
+    showcase(seed = 42) { // one of each robot class lined up ahead of the ship, for eyeballing
+      const rng = makeRng(seed);
+      const kinds = ['grunt', 'claw', 'hulk', 'sniper', 'turret', 'reactor'];
+      const group = new THREE.Group();
+      group.name = 'showcase';
+      const fwd = ship.forward(new THREE.Vector3());
+      const right = new THREE.Vector3().crossVectors(fwd, new THREE.Vector3(0, 1, 0)).normalize();
+      kinds.forEach((k, i) => {
+        const { group: bot } = buildRobot(k, rng);
+        bot.position.copy(ship.object3d.position)
+          .addScaledVector(fwd, 10)
+          .addScaledVector(right, (i - (kinds.length - 1) / 2) * 4.5);
+        bot.lookAt(ship.object3d.position);
+        group.add(bot);
+      });
+      scene.remove(scene.getObjectByName('showcase') ?? group);
+      scene.add(group);
+    },
   },
 };
 

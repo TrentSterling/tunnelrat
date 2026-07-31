@@ -32,13 +32,20 @@ export const CONFIG = {
   weapons: {
     laser: { speed: 90, damage: 12, cooldown: 0.16, energyCost: 1.6, color: 0x5cff8a, radius: 0.35, life: 2.2 },
     enemyBolt: { speed: 46, damage: 9, color: 0xff5a3b, radius: 0.4, life: 3.5 },
+    sniperBolt: { speed: 74, damage: 14, color: 0x7dff9a, radius: 0.35, life: 3.0 },
     reactorBolt: { speed: 34, damage: 16, color: 0xffb13b, radius: 0.7, life: 5.0 },
   },
 
   enemies: {
-    dronesBase: 8,        // + 2 per depth
-    turretsBase: 3,       // + 1 per depth
-    drone: { hp: 30, speed: 14, accel: 26, fireRange: 42, fireCooldown: 1.4, sightRange: 55, radius: 1.2, strafe: 8 },
+    // spawn table: [base count, added per depth beyond 1] per mobile class + turrets
+    spawns: { grunt: [5, 2], claw: [2, 1], hulk: [1, 1], sniper: [1, 1], turret: [3, 1] },
+    // mobile classes share the movement machinery; rangeNear/rangeFar = preferred band,
+    // burst = shots per trigger pull, lead = aim lead factor (0 none, 1 full)
+    grunt:  { hp: 30, speed: 14, accel: 26, fireRange: 42, fireCooldown: 1.4, sightRange: 55, radius: 1.2, strafe: 8, bolt: 'enemyBolt', rangeNear: 12, rangeFar: 20, burst: 1, burstGap: 0, lead: 0.5 },
+    hulk:   { hp: 95, speed: 8,  accel: 14, fireRange: 34, fireCooldown: 2.6, sightRange: 50, radius: 2.2, strafe: 4, bolt: 'enemyBolt', rangeNear: 9,  rangeFar: 24, burst: 3, burstGap: 0.15, lead: 0.4 },
+    sniper: { hp: 20, speed: 12, accel: 22, fireRange: 58, fireCooldown: 2.8, sightRange: 70, radius: 1.2, strafe: 6, bolt: 'sniperBolt', rangeNear: 28, rangeFar: 44, burst: 1, burstGap: 0, lead: 1.0 },
+    claw:   { hp: 26, speed: 22, accel: 40, fireRange: 0,  fireCooldown: 0,   sightRange: 60, radius: 1.3, strafe: 0, bolt: null, rangeNear: 0, rangeFar: 0, burst: 0, burstGap: 0, lead: 0,
+              melee: 14, meleeCooldown: 1.0, meleeKnock: 14 },
     turret: { hp: 45, fireRange: 50, fireCooldown: 2.0, radius: 1.5 },
     reactor: { hp: 260, fireCooldown: 1.1, fireRange: 60, radius: 4.5 },
   },
