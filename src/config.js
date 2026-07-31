@@ -52,7 +52,7 @@ export const CONFIG = {
   },
 
   colors: {
-    rockDeep: 0x2a2433, rockShallow: 0x4a4438,   // vertex color gradient by depth
+    rockDeep: 0x241d38, rockShallow: 0x8a6a45,   // vertex color gradient by depth
     fog: 0x05070a, fogDensity: 0.016,
     headlamp: 0xfff4d6,
     key: 0xffd23b, door: 0xff3b3b, doorOpen: 0x5cff8a, exit: 0x39d0ff, reactor: 0xff7a2f,

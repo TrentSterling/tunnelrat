@@ -31,6 +31,119 @@ import { generateLevelGraph } from './graph.js';
 import { createDensityField } from './density.js';
 import { polygonize } from './marchingcubes.js';
 
+// One shared material for every chunk mesh across the app lifetime (levels reload,
+// disposeLevel() in main.js only disposes geometries, so the material must not be
+// recreated per level or it would leak).
+const caveMaterial = new THREE.MeshLambertMaterial({ vertexColors: true });
+
+const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
+
+// Cheap deterministic position hash -> [0,1), no rng.js dependency needed since this
+// is purely a function of world position (same vertex position always gets the same
+// jitter regardless of build order).
+function hash01(x, y, z) {
+  const s = Math.sin(x * 127.1 + y * 311.7 + z * 74.7) * 43758.5453123;
+  return s - Math.floor(s);
+}
+
+// scratch (buildLevel is not a hot per-frame path, but avoid needless churn anyway)
+const _dir = new THREE.Vector3();
+const _origin = new THREE.Vector3(0, 0, 0);
+const _upY = new THREE.Vector3(0, 1, 0);
+const _upX = new THREE.Vector3(1, 0, 0);
+const _lookMat = new THREE.Matrix4();
+
+// Ship forward is -Z of object3d (see ship.js contract); build a quaternion whose
+// local -Z axis points along `dir` in world space.
+function quatFacing(dir) {
+  const up = Math.abs(dir.y) > 0.98 ? _upX : _upY;
+  _lookMat.lookAt(_origin, dir, up);
+  return new THREE.Quaternion().setFromRotationMatrix(_lookMat);
+}
+
 export function buildLevel(seed, config, onProgress) {
-  throw new Error('NOT IMPLEMENTED: buildLevel');
+  const cfg = config;
+  const graph = generateLevelGraph(seed, cfg);
+  const field = createDensityField(graph, seed, cfg);
+
+  const res = cfg.world.chunk;
+  const chunkSize = cfg.world.chunk * cfg.world.voxelSize;
+  const bounds = field.bounds;
+
+  const sizeX = bounds.max.x - bounds.min.x;
+  const sizeY = bounds.max.y - bounds.min.y;
+  const sizeZ = bounds.max.z - bounds.min.z;
+  const nx = Math.max(1, Math.ceil(sizeX / chunkSize));
+  const ny = Math.max(1, Math.ceil(sizeY / chunkSize));
+  const nz = Math.max(1, Math.ceil(sizeZ / chunkSize));
+  const totalChunks = nx * ny * nz;
+
+  const rockDeep = new THREE.Color(cfg.colors.rockDeep);
+  const rockShallow = new THREE.Color(cfg.colors.rockShallow);
+  const ySpan = sizeY > 1e-6 ? sizeY : 1;
+
+  const caveGroup = new THREE.Group();
+  caveGroup.name = 'caveGroup';
+
+  let done = 0;
+  const chunkMin = new THREE.Vector3();
+
+  for (let cz = 0; cz < nz; cz++) {
+    for (let cy = 0; cy < ny; cy++) {
+      for (let cx = 0; cx < nx; cx++) {
+        chunkMin.set(
+          bounds.min.x + cx * chunkSize,
+          bounds.min.y + cy * chunkSize,
+          bounds.min.z + cz * chunkSize,
+        );
+
+        const result = polygonize(field, chunkMin, chunkSize, res);
+        if (result) {
+          const vertexCount = result.positions.length / 3;
+          const colors = new Float32Array(vertexCount * 3);
+          for (let v = 0; v < vertexCount; v++) {
+            const px = result.positions[v * 3];
+            const py = result.positions[v * 3 + 1];
+            const pz = result.positions[v * 3 + 2];
+
+            const t = clamp01((py - bounds.min.y) / ySpan);
+            const jitter = (hash01(px, py, pz) * 2 - 1) * 0.08;
+
+            const ci = v * 3;
+            colors[ci] = clamp01((rockDeep.r + (rockShallow.r - rockDeep.r) * t) * (1 + jitter));
+            colors[ci + 1] = clamp01((rockDeep.g + (rockShallow.g - rockDeep.g) * t) * (1 + jitter));
+            colors[ci + 2] = clamp01((rockDeep.b + (rockShallow.b - rockDeep.b) * t) * (1 + jitter));
+          }
+
+          const geo = new THREE.BufferGeometry();
+          geo.setAttribute('position', new THREE.BufferAttribute(result.positions, 3));
+          geo.setAttribute('normal', new THREE.BufferAttribute(result.normals, 3));
+          geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+          const mesh = new THREE.Mesh(geo, caveMaterial);
+          mesh.matrixAutoUpdate = false;
+          mesh.name = `cave-${cx}-${cy}-${cz}`;
+          caveGroup.add(mesh);
+        }
+
+        done++;
+        if (onProgress) onProgress(done / totalChunks);
+      }
+    }
+  }
+
+  const spawnNode = graph.nodes.find((n) => n.id === graph.spawnId);
+  const spawnPos = spawnNode.pos.clone();
+
+  const neighborIds = graph.neighbors.get(graph.spawnId);
+  let spawnQuat;
+  if (neighborIds && neighborIds.length > 0) {
+    const firstNeighbor = graph.nodes.find((n) => n.id === neighborIds[0]);
+    _dir.subVectors(firstNeighbor.pos, spawnPos).normalize();
+    spawnQuat = quatFacing(_dir);
+  } else {
+    spawnQuat = new THREE.Quaternion();
+  }
+
+  return { graph, field, caveGroup, spawnPos, spawnQuat };
 }

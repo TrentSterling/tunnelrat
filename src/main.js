@@ -27,12 +27,13 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(CONFIG.colors.fog);
 scene.fog = new THREE.FogExp2(CONFIG.colors.fog, CONFIG.colors.fogDensity);
 scene.add(new THREE.AmbientLight(0x404060, 0.35));
+scene.add(new THREE.HemisphereLight(0x3a4a66, 0x33241a, 0.5)); // subtle shape fill so walls read as 3d
 
 const camera = new THREE.PerspectiveCamera(78, innerWidth / innerHeight, 0.1, 400);
 const camRig = new THREE.Group(); // shake offsets go here, camera stays at rig origin
 camRig.add(camera);
 
-const headlamp = new THREE.SpotLight(CONFIG.colors.headlamp, 260, 90, Math.PI / 5, 0.45, 1.6);
+const headlamp = new THREE.SpotLight(CONFIG.colors.headlamp, 320, 95, Math.PI / 4.2, 0.55, 1.55);
 headlamp.position.set(0, 0, 0.5);
 headlamp.target.position.set(0, 0, -10);
 camera.add(headlamp, headlamp.target);
