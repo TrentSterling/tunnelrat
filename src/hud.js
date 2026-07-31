@@ -37,8 +37,9 @@ const CSS = `
 #hud .hud-bar { position:relative; height:12px; border:1px solid rgba(255,255,255,.28);
   background:rgba(255,255,255,.04); overflow:hidden; }
 #hud .hud-bar-fill { position:absolute; top:0; left:0; bottom:0; width:100%;
-  background:var(--accent); box-shadow:0 0 8px currentColor; transition:width .15s linear, background-color .25s linear; }
-#hud .hud-bottomright .hud-bar-fill { left:auto; right:0; background:var(--accent2); }
+  transform-origin:left center; background:var(--accent); box-shadow:0 0 8px currentColor;
+  transition:transform .15s linear, background-color .25s linear; }
+#hud .hud-bottomright .hud-bar-fill { transform-origin:right center; background:var(--accent2); }
 #hud .hud-bar-value { margin-top:4px; font-size:11px; letter-spacing:2px; color:#9aa5b8; }
 #hud .hud-key { margin-top:10px; font-size:12px; letter-spacing:3px; color:#3a4150;
   transition:color .2s, text-shadow .2s; }
@@ -138,14 +139,14 @@ export class HUD {
 
   setShields(v, max) {
     const pct = clamp01(v / max);
-    this.el.shieldFill.style.width = (pct * 100) + '%';
+    this.el.shieldFill.style.transform = 'scaleX(' + pct + ')';
     this.el.shieldFill.style.background = pct < 0.3 ? 'var(--danger)' : 'var(--accent)';
     this.el.shieldValue.textContent = Math.max(0, Math.round(v)) + ' / ' + max;
   }
 
   setEnergy(v, max) {
     const pct = clamp01(v / max);
-    this.el.energyFill.style.width = (pct * 100) + '%';
+    this.el.energyFill.style.transform = 'scaleX(' + pct + ')';
     this.el.energyValue.textContent = Math.max(0, Math.round(v)) + ' / ' + max;
   }
 
