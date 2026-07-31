@@ -9,6 +9,9 @@
 //   velocity: THREE.Vector3      // world-space m/s
 //   shields, energy: number      // start at config.ship.shields / .energy
 //   alive: boolean
+//   noclip: boolean              // cheat console toggle (default false); while true,
+//                                // _integrateAndCollide skips the SDF collision resolve
+//                                // block entirely (position still integrates from velocity)
 //   onImpact: null | (speed:number) => void   // set by main; fired on wall hits > 6 m/s
 //
 //   reset(pos:Vector3, quat:Quaternion)       // also refills shields/energy, alive=true
@@ -63,6 +66,7 @@ export class Ship {
     this.shields = config.ship.shields;
     this.energy = config.ship.energy;
     this.alive = true;
+    this.noclip = false; // cheat console; not reset by reset() so it survives retries/level loads
     this.onImpact = null;
   }
 
@@ -156,7 +160,7 @@ export class Ship {
   _integrateAndCollide(dt) {
     const cfg = this.config.ship;
     const field = this.field;
-    if (!field) {
+    if (!field || this.noclip) {
       this.object3d.position.addScaledVector(this.velocity, dt);
       return;
     }

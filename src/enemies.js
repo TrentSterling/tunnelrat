@@ -6,6 +6,11 @@
 // class EnemyManager {
 //   constructor(scene, config)
 //   populate(graph, field, projectiles, seed, depth)   // spawn table config.enemies.spawns
+//   spawnOne(kind, pos:Vector3) -> entry   // INTEGRATOR-ADDED: cheat console SPAWN action.
+//     kind: 'grunt'|'claw'|'hulk'|'sniper' (mobile) or 'turret'; requires populate() to
+//     have run first (reuses this.graph/this.field/this.rng). Mobile bots reuse _spawnBot
+//     with a synthetic node centered on pos; turrets reuse _spawnTurret (raycasts for a
+//     wall to plant on near pos).
 //   update(dt, ship, field, graph)
 //   list() -> [{ pos, radius, alive, takeDamage(n), isReactor? }]
 //   reactorAlive: boolean
@@ -14,12 +19,24 @@
 // }
 //
 // Class behaviors:
-//   grunt : patrol -> chase, holds 12-20m band, strafes, single half-lead bolts
+//   grunt : patrol -> chase, holds 12-20m band, strafes a per-instance 3D figure-8 plane,
+//           single half-lead bolts; below fleeHpFrac hp goes 'flee' (sticky, no hp regen exists)
 //   hulk  : slow bruiser, 3-bolt bursts with slight spread, faces the ship while firing
-//   sniper: hangs back 28-44m, backs off if pressed, fast full-lead sniperBolt
-//   claw  : no gun; sprints straight in and shreds on contact (melee + knockback)
+//   sniper: hangs back 28-44m, backs off if pressed, fast full-lead sniperBolt, jinks hardest,
+//           below fleeHpFrac hp goes 'flee'
+//   claw  : no gun; sprints straight in and shreds on contact (melee + knockback); below
+//           enrageHpFrac hp ENRAGES (+speed mult, melee cooldown mult), never flees
 //   turret: wall-planted, slerp aim + cooldown fire
 //   reactor: fires reactorBolt, flashes on damage, death triggers escape
+// Movement extras (all seeded via this.rng / per-bot rng-seeded fields, never Math.random):
+//   - combat strafe uses a per-instance random strafe-plane axis + two sine phases
+//     (figure-8 Lissajous) so bots weave vertically as well as side to side.
+//   - jink: while state==='chase' with LOS, every 0.8-1.6s (reseeded per-bot) a random
+//     perpendicular velocity impulse (cfg.jink, 0 disables) is applied; sniper highest.
+//   - flee: grunt/sniper below cfg.fleeHpFrac hp path to the graph neighbor of their
+//     current node that maximizes distance from the ship, keep firing at half rate over
+//     the shoulder; sticky (no hp regen in this game, so flee never reverts to chase).
+//     Hulks/claws never flee (no fleeHpFrac on those classes).
 // Enemy pathfinding uses findPath(..., true): the locked door only blocks the ship.
 import * as THREE from 'three';
 import { makeRng, randRange, pick } from './util/rng.js';
@@ -36,6 +53,8 @@ const _normal = new THREE.Vector3();
 const _desired = new THREE.Vector3();
 const _perp = new THREE.Vector3();
 const _target = new THREE.Vector3();
+const _perp2 = new THREE.Vector3();
+const _jinkAxis = new THREE.Vector3();
 const _leadPos = new THREE.Vector3();
 const _fireDir = new THREE.Vector3();
 const _muzzle = new THREE.Vector3();
@@ -158,6 +177,27 @@ export class EnemyManager {
     this.reactorAlive = true;
   }
 
+  // cheat console SPAWN <kind>: spawn a single unit near an arbitrary world position,
+  // outside the normal populate() spawn table. Requires a populated level (this.graph /
+  // this.field / this.rng all set by populate()); silently no-ops otherwise.
+  spawnOne(kind, pos) {
+    if (!this.field) return null;
+    const rng = this.rng || (this.rng = makeRng((Date.now() ^ 0x5eed) >>> 0));
+    if (kind === 'turret') {
+      const node = { pos: pos.clone(), radius: 5 };
+      const t = this._spawnTurret(node, this.field, rng);
+      this.turrets.push(t);
+      return t;
+    }
+    if (this.graph && this.config.enemies[kind] && kind !== 'turret' && kind !== 'reactor') {
+      const node = { id: nearestNodeId(this.graph, pos), pos: pos.clone(), radius: 5 };
+      const bot = this._spawnBot(kind, node, 0, 1, rng);
+      this.bots.push(bot);
+      return bot;
+    }
+    return null;
+  }
+
   _spawnBot(classKey, node, index, totalCount, rng) {
     const cfg = this.config.enemies[classKey];
     const pos = new THREE.Vector3();
@@ -197,7 +237,11 @@ export class EnemyManager {
       burstTimer: 0,
       meleeTimer: 0,
       strafePhase: randRange(rng, 0, Math.PI * 2),
+      strafeOffset2: randRange(rng, 0, Math.PI * 2), // second figure-8 harmonic phase
       strafeSign: rng() < 0.5 ? -1 : 1,
+      strafeAxis: randomUnitVector(rng, new THREE.Vector3()), // per-instance strafe-plane basis seed
+      jinkTimer: randRange(rng, 0.8, 1.6),
+      fleeTargetId: null,
     };
     entry.takeDamage = (n) => this._damageEnemy(entry, n, false);
     return entry;
@@ -330,6 +374,16 @@ export class EnemyManager {
       los = field.raycast(b.pos, _dirToShip, dist) === -1;
     }
 
+    // hp-triggered overrides, checked before state dispatch. flee is sticky (no hp
+    // regen exists in this game, so once entered it never reverts to chase). enrage
+    // is not a state, just a per-frame modifier read inside the melee branch below.
+    if (cfg.fleeHpFrac != null && b.state !== 'flee' && b.hp / cfg.hp < cfg.fleeHpFrac) {
+      b.state = 'flee';
+      b.repathTimer = 0;
+      b.fleeTargetId = null;
+    }
+    const enraged = !!cfg.enrageHpFrac && b.hp / cfg.hp < cfg.enrageHpFrac;
+
     if (b.state === 'patrol') {
       if (shipAlive && dist < cfg.sightRange && los) {
         b.state = 'chase';
@@ -341,6 +395,7 @@ export class EnemyManager {
         b.currentPath = null;
       }
     }
+    // 'flee' has no exit condition here by design; see comment above.
 
     _desired.set(0, 0, 0);
     let targetSpeed = cfg.speed * 0.4;
@@ -357,6 +412,39 @@ export class EnemyManager {
           _desired.copy(targetNode.pos).sub(b.pos).normalize();
         }
       }
+    } else if (b.state === 'flee') {
+      // grunt/sniper under fleeHpFrac hp: path toward whichever neighbor of our
+      // current graph node is farthest from the ship, still firing over the shoulder.
+      b.repathTimer -= dt;
+      if (b.repathTimer <= 0) {
+        b.repathTimer = 1.0;
+        const fromId = nearestNodeId(graph, b.pos);
+        const neighbors = graph.neighbors.get(fromId) || [];
+        let bestId = null;
+        let bestDist = -1;
+        for (const nid of neighbors) {
+          const n = this.nodeMap.get(nid);
+          if (!n) continue;
+          const d = n.pos.distanceTo(shipPos);
+          if (d > bestDist) { bestDist = d; bestId = nid; }
+        }
+        b.fleeTargetId = bestId;
+      }
+      const fleeNode = b.fleeTargetId != null ? this.nodeMap.get(b.fleeTargetId) : null;
+      if (fleeNode) {
+        _desired.copy(fleeNode.pos).sub(b.pos).normalize();
+      } else if (dist > 0.001) {
+        _desired.copy(_dirToShip).negate(); // no reachable neighbor: just back off directly
+      }
+      targetSpeed = cfg.speed;
+
+      if (shipAlive && los && dist > 0.001 && dist < cfg.fireRange && cfg.bolt) {
+        b.fireTimer -= dt;
+        if (b.fireTimer <= 0 && this.projectiles) {
+          b.fireTimer = cfg.fireCooldown * 2; // half rate while fleeing
+          this._fireBolt(b, cfg, ship, shipPos, dist);
+        }
+      }
     } else {
       // CHASE
       b.repathTimer -= dt;
@@ -370,13 +458,26 @@ export class EnemyManager {
       b.strafePhase += dt;
 
       if (shipAlive && los && dist > 0.001) {
+        // jink: seeded-stagger (0.8-1.6s) lateral velocity impulse along a fresh random
+        // perpendicular; magnitude is cfg.jink (0/undefined disables), snipers highest.
+        b.jinkTimer -= dt;
+        if (b.jinkTimer <= 0) {
+          b.jinkTimer = randRange(this.rng, 0.8, 1.6);
+          if (cfg.jink) {
+            randomUnitVector(this.rng, _jinkAxis);
+            _perp.crossVectors(_dirToShip, _jinkAxis);
+            if (_perp.lengthSq() < 1e-6) _perp.set(0, 1, 0); else _perp.normalize();
+            b.velocity.addScaledVector(_perp, cfg.jink);
+          }
+        }
+
         if (isMelee) {
-          // claw: no range band, no gun; run the target down
+          // claw: no range band, no gun; run the target down. ENRAGE below enrageHpFrac hp.
           _desired.copy(_dirToShip);
-          targetSpeed = cfg.speed;
+          targetSpeed = enraged ? cfg.speed * cfg.enrageSpeedMult : cfg.speed;
           b.meleeTimer -= dt;
           if (dist < b.radius + SHIP_RADIUS_PAD + 0.6 && b.meleeTimer <= 0) {
-            b.meleeTimer = cfg.meleeCooldown;
+            b.meleeTimer = enraged ? cfg.meleeCooldown * cfg.enrageMeleeCooldownMult : cfg.meleeCooldown;
             if (this.onShipMelee) this.onShipMelee(cfg.melee);
             ship.velocity.addScaledVector(_dirToShip, cfg.meleeKnock); // shove
             b.velocity.addScaledVector(_dirToShip, -cfg.meleeKnock * 0.5); // recoil
@@ -389,10 +490,20 @@ export class EnemyManager {
             _desired.copy(_dirToShip).negate();
             targetSpeed = cfg.speed;
           } else if (cfg.strafe > 0) {
-            _perp.crossVectors(_dirToShip, UP);
+            // per-instance strafe plane: b.strafeAxis (random unit vector seeded at spawn)
+            // combines with the live sightline to build two perpendicular basis vectors;
+            // two sine phases (fundamental + 2nd harmonic, Lissajous figure-8) weave the
+            // bot through that plane so it drifts vertically as well as side to side.
+            _perp.crossVectors(_dirToShip, b.strafeAxis);
+            if (_perp.lengthSq() < 1e-6) _perp.crossVectors(_dirToShip, UP);
             if (_perp.lengthSq() < 1e-6) _perp.set(1, 0, 0); else _perp.normalize();
-            const sign = (Math.sin(b.strafePhase * 1.3) >= 0 ? 1 : -1) * b.strafeSign;
-            _desired.copy(_perp).multiplyScalar(sign);
+            _perp2.crossVectors(_dirToShip, _perp).normalize();
+            const t = b.strafePhase * 1.3;
+            const w1 = Math.sin(t);
+            const w2 = Math.sin(2 * t + b.strafeOffset2);
+            _desired.copy(_perp).multiplyScalar(w1).addScaledVector(_perp2, w2);
+            if (_desired.lengthSq() > 1e-8) _desired.normalize();
+            _desired.multiplyScalar(b.strafeSign);
             targetSpeed = cfg.strafe;
           }
           combatFacing = b.classKey === 'hulk' || b.classKey === 'sniper';
@@ -426,6 +537,7 @@ export class EnemyManager {
           if (dist > 0.001) _desired.copy(_toShip).normalize();
           targetSpeed = cfg.speed;
         }
+        if (isMelee && enraged) targetSpeed *= cfg.enrageSpeedMult;
       }
     }
 

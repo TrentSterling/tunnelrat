@@ -16,6 +16,8 @@ import { buildRobot, scorch } from './robots.js';
 import { DeathSite } from './deathsite.js';
 import { MatrixView } from './matrix.js';
 import { makeRng } from './util/rng.js';
+import { CheatConsole } from './console.js';
+import { BuddyBot } from './buddybot.js';
 
 const app = document.getElementById('app');
 const loadingEl = document.getElementById('loading');
@@ -224,10 +226,15 @@ function loadLevel(newSeed, newDepth) {
   loadStatusEl.textContent = 'DESCENDING TO DEPTH ' + depth + '...';
 
   setTimeout(() => { // let the loading screen paint before the synchronous build
-    level = buildLevel(seed, CONFIG, (f) => {
+    level = buildLevel(seed, CONFIG, depth, (f) => {
       loadStatusEl.textContent = 'CARVING ' + Math.round(f * 100) + '%';
     });
     scene.add(level.caveGroup);
+
+    // BIOMES: depth-driven fog/background, reapplied fresh every level load
+    scene.fog.color.set(level.biome.fog);
+    scene.fog.density = level.biome.fogDensity;
+    scene.background.set(level.biome.fog);
 
     if (!ship) {
       ship = new Ship(CONFIG, level.field);
@@ -269,6 +276,12 @@ function loadLevel(newSeed, newDepth) {
     automap.visit(level.graph.spawnId);
     matrix.setLevel(level.graph);
 
+    // BUDDY BOT: one instance for the whole session, respawned near the new spawn
+    // point + retargeted to the level's first objective (the keycard) every load
+    if (!buddy) buddy = new BuddyBot(scene, CONFIG);
+    buddy.spawnAt(level.spawnPos.clone().add(_buddySpawnOffset));
+    setBuddyObjective('key');
+
     ship.onImpact = (speed) => { sfx.play('hitWall'); shake = Math.min(1, shake + speed * 0.03); };
 
     hud.setDepth(depth);
@@ -294,14 +307,143 @@ function onReactorDestroyed() {
 // ---------- gameplay event routing ----------
 function handleEvents(events) {
   for (const ev of events) {
-    if (ev === 'keyPickup') { sfx.play('pickup'); hud.setKey(true); hud.message('KEYCARD ACQUIRED'); hud.setObjective('UNLOCK THE SECURITY DOOR'); automap.setKeyTaken(); }
+    if (ev === 'keyPickup') { sfx.play('pickup'); hud.setKey(true); hud.message('KEYCARD ACQUIRED'); hud.setObjective('UNLOCK THE SECURITY DOOR'); automap.setKeyTaken(); setBuddyObjective('door'); }
     else if (ev === 'doorBlocked') { sfx.play('thrum'); hud.message('LOCKED: KEYCARD REQUIRED', 1200); }
-    else if (ev === 'doorOpen') { sfx.play('unlock'); hud.message('SECURITY DOOR OPEN'); hud.setObjective('DESTROY THE REACTOR'); automap.setDoorOpen(true); }
-    else if (ev === 'escapeStart') { hud.message('REACTOR CRITICAL: GET OUT', 3200); hud.setObjective('REACH THE EXIT BEACON'); }
+    else if (ev === 'doorOpen') { sfx.play('unlock'); hud.message('SECURITY DOOR OPEN'); hud.setObjective('DESTROY THE REACTOR'); automap.setDoorOpen(true); setBuddyObjective('reactor'); }
+    else if (ev === 'escapeStart') { hud.message('REACTOR CRITICAL: GET OUT', 3200); hud.setObjective('REACH THE EXIT BEACON'); setBuddyObjective('exit'); }
     else if (ev === 'escaped') { sfx.play('win'); hud.setTimer(null); hud.showWin(true, depth); strobe.intensity = 0; }
     else if (ev === 'died') { sfx.play('die'); startDeathCinematic(); }
   }
 }
+
+// ---------- cheat console + buddy bot ----------
+let buddy = null;
+let timeScale = 1;       // SLOMO; multiplies dt for everything gated by phase playing/escape
+let framesOn = false;
+let frameStatsEl = null;
+let fpsAccumFrames = 0;
+let fpsAccumTime = 0;
+const _buddySpawnOffset = new THREE.Vector3(2.2, 1.1, 2.2);
+const _cheatSpawnDir = new THREE.Vector3();
+const _cheatSpawnPos = new THREE.Vector3();
+
+// Shared by the cheat console's GOD action and window.TR.debug.god() (the "existing
+// debug god" the integration mission asks the console to reuse): one-way invuln, no
+// toggle-back, matching the pre-existing debug.god() behavior tools/smoketest.mjs uses.
+function debugGod() {
+  ship.takeDamage = () => false;
+  ship.spendEnergy = () => true;
+}
+
+function ensureFrameStats() {
+  if (frameStatsEl) return;
+  frameStatsEl = document.createElement('div');
+  frameStatsEl.id = 'trFrameStats';
+  frameStatsEl.style.cssText =
+    'position:fixed; top:14px; left:50%; transform:translateX(-50%); z-index:7; ' +
+    'font-family:"Courier New",monospace; font-size:12px; letter-spacing:1px; color:#5cff8a; ' +
+    'background:rgba(3,6,4,.7); padding:3px 10px; border:1px solid rgba(92,255,138,.4); ' +
+    'pointer-events:none; white-space:pre; display:none;';
+  document.body.appendChild(frameStatsEl);
+}
+
+// real (unscaled) frame time, sampled every ~0.25s so the readout doesn't flicker
+function updateFrameStats(rawDt) {
+  if (!framesOn || !frameStatsEl) return;
+  fpsAccumFrames++;
+  fpsAccumTime += rawDt;
+  if (fpsAccumTime >= 0.25) {
+    const avgMs = (fpsAccumTime / fpsAccumFrames) * 1000;
+    frameStatsEl.textContent = 'FPS ' + Math.round(fpsAccumFrames / fpsAccumTime) + '  FRAME ' + avgMs.toFixed(2) + 'ms';
+    fpsAccumFrames = 0;
+    fpsAccumTime = 0;
+  }
+}
+
+// key node -> door midpoint -> reactor node -> exit node, one per mission phase
+function setBuddyObjective(which) {
+  if (!buddy || !level) return;
+  const g = level.graph;
+  const byId = new Map(g.nodes.map((n) => [n.id, n]));
+  if (which === 'key') buddy.setObjective(byId.get(g.keyId).pos);
+  else if (which === 'door') {
+    const a = byId.get(g.lockedEdge.a).pos;
+    const b = byId.get(g.lockedEdge.b).pos;
+    buddy.setObjective(a.clone().lerp(b, 0.5));
+  } else if (which === 'reactor') buddy.setObjective(byId.get(g.reactorId).pos);
+  else if (which === 'exit') buddy.setObjective(byId.get(g.exitId).pos);
+  else buddy.setObjective(null);
+}
+
+const cheatActions = {
+  god() { debugGod(); },
+  giveAll() {
+    if (!ship || !gamestate) return;
+    ship.shields = CONFIG.ship.shields;
+    ship.energy = CONFIG.ship.energy;
+    gamestate.hasKey = true;
+    hud.setKey(true);
+    xp += 500;
+    hud.setXP(xp);
+  },
+  noclip() {
+    if (!ship) return false;
+    ship.noclip = !ship.noclip;
+    return ship.noclip;
+  },
+  frames() {
+    framesOn = !framesOn;
+    ensureFrameStats();
+    frameStatsEl.style.display = framesOn ? 'block' : 'none';
+    fpsAccumFrames = 0;
+    fpsAccumTime = 0;
+    return framesOn;
+  },
+  slomo(n) {
+    timeScale = Math.min(2, Math.max(0.05, n));
+  },
+  spawn(kind) {
+    if (!enemies || !ship) return;
+    ship.forward(_cheatSpawnDir);
+    _cheatSpawnPos.copy(ship.object3d.position).addScaledVector(_cheatSpawnDir, 6);
+    enemies.spawnOne(kind, _cheatSpawnPos);
+  },
+  mapAll() {
+    automap?.mapAll();
+  },
+  warp(delta) {
+    let d;
+    if (delta === '+1') d = 1;
+    else if (delta === '-1') d = -1;
+    else {
+      const target = Math.floor(Number(delta));
+      if (!Number.isFinite(target)) return;
+      d = target - depth;
+    }
+    const newDepth = Math.max(1, depth + d);
+    loadLevel(seed + (newDepth - depth), newDepth);
+  },
+  matrix() { matrix.toggle(); },
+  kinds: ['grunt', 'claw', 'hulk', 'sniper', 'turret'],
+};
+
+const cheatConsole = new CheatConsole(document.body, cheatActions);
+
+// CORRECTIVE EDIT (interface mismatch): console.js's own titlebar hint reads "` TO
+// CLOSE", but its input auto-focuses on open AND on every click inside the console root,
+// and its input's keydown handler calls stopPropagation() unconditionally before
+// checking which key -- so a normal bubble-phase `input.justPressed('Backquote')` check
+// in the frame loop (gated by input.js's isTypingIntoField(), which also sees that
+// focused input) can open the console but can basically never close it again. Capturing
+// on window in the CAPTURE phase runs before the event reaches the console's input and
+// its stopPropagation(), so this is the one and only Backquote-toggle path (the frame
+// loop does NOT also check input.justPressed('Backquote'), to avoid a double-toggle).
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'Backquote') {
+    e.preventDefault();
+    cheatConsole.toggle();
+  }
+}, true);
 
 // ---------- loop ----------
 const clock = new THREE.Clock();
@@ -310,13 +452,19 @@ const lastCrumb = new THREE.Vector3(1e9, 1e9, 1e9); // far away so the first pel
 
 function frame() {
   requestAnimationFrame(frame);
-  const dt = Math.min(clock.getDelta(), 0.05);
+  const rawDt = Math.min(clock.getDelta(), 0.05);
+  updateFrameStats(rawDt);
   if (!level || !window.TR.ready) return;
 
-  input.pollGamepad(dt);
+  input.pollGamepad(rawDt);
+  // Backquote toggle lives on a dedicated capture-phase window listener above, not here
+  // (see the CORRECTIVE EDIT comment by cheatConsole's construction).
+  if (input.justPressed('KeyG') && buddy) buddy.active = !buddy.active;
+
+  const dt = rawDt * timeScale;
   const phase = gamestate.phase;
 
-  if (phase === 'playing' || phase === 'escape') {
+  if ((phase === 'playing' || phase === 'escape') && !cheatConsole.open) {
     ship.update(dt, input);
 
     // engine thrum follows thrust input + current speed
@@ -347,6 +495,14 @@ function frame() {
       },
     });
     enemies.update(dt, ship, level.field, level.graph);
+    if (buddy) {
+      buddy.update(dt, {
+        shipPos: ship.object3d.position,
+        field: level.field,
+        graph: level.graph,
+        onChirp: (kind) => sfx.play(kind === 'waiting' ? 'thrum' : 'pickup'),
+      });
+    }
     handleEvents(gamestate.update(dt, ship));
 
     // automap discovery poll
@@ -475,6 +631,7 @@ function frame() {
   camera.position.set((Math.random() - 0.5) * shake * 0.4, (Math.random() - 0.5) * shake * 0.4, 0);
 
   renderer.render(scene, camera);
+  automap.renderMini(renderer, ship.object3d.position, ship.object3d.quaternion, enemies.list());
   if (automap.visible) automap.render(renderer, ship.object3d.position, ship.object3d.quaternion, enemies.list());
   input.endFrame();
 }
@@ -518,7 +675,7 @@ window.TR = {
       const lookMat = new THREE.Matrix4().lookAt(new THREE.Vector3(), dir, new THREE.Vector3(0, 1, 0));
       ship.object3d.quaternion.setFromRotationMatrix(lookMat);
     },
-    god() { ship.takeDamage = () => false; ship.spendEnergy = () => true; },
+    god() { debugGod(); },
     toggleMap() { automap.toggle(); },
     matrix() { matrix.toggle(); },
     showcase(seed = 42) { // one of each robot class lined up ahead of the ship, for eyeballing

@@ -8,7 +8,7 @@
 //
 // CONTRACT (implement exactly):
 //
-// createDensityField(graph, seed, config) -> {
+// createDensityField(graph, seed, config, biome?) -> {
 //   sample(x, y, z) -> number,
 //   collisionNormal(x, y, z, out:THREE.Vector3) -> out,
 //     unit vector pointing INTO OPEN AIR (away from rock): the direction to push a
@@ -17,12 +17,23 @@
 //     marches from origin; returns distance at first sample >= 0, or -1 if clear.
 //     Used for enemy line-of-sight and hitscan checks.
 //   bounds: { min:THREE.Vector3, max:THREE.Vector3 },   // world box that contains all carving + margin
-//   decor: {                                            // for procgen/decor.js; no spline recompute
+//   decor: {                                            // for procgen/decor.js + props.js; no spline recompute
 //     edges: [{ a, b, style, radius, locked, polyline: THREE.Vector3[] }],
-//     rooms: [{ id, pos:THREE.Vector3, radius, style, kind }],
+//     rooms: [{ id, pos:THREE.Vector3, radius, style, kind, shape }],
 //     seed,                                             // level seed (decor derives its own rng)
 //   },
 // }
+//
+// biome (optional, from config.js getBiome): when given, its noiseAmp/noiseFreq
+// override config.world.noiseAmp/noiseFreq (ice = crisp low-amp high-freq walls,
+// magma = chunky high-amp low-freq). Everything else is biome-independent.
+//
+// ROOM SHAPES (node.shape from graph.js):
+//   'sphere' | 'cavern' : sdfSphere at node.radius (cavern radius is pre-scaled).
+//   'shaft'  : vertical capsule; segment from pos.y - r*shaftHalfLen to
+//              pos.y + r*shaftHalfLen, capsule radius r*shaftRadiusScale
+//              (config.world). Total height ~3x radius: reads as a mining shaft.
+//              Shafts only occur on cave-style plain rooms (graph.js guarantees).
 //
 // Field construction:
 //   base = +4 (solid). For each room node: sdfSphere(p, node.pos, node.radius).
@@ -72,21 +83,35 @@ function smoothstep(a, b, x) {
   return t * t * (3 - 2 * t);
 }
 
-export function createDensityField(graph, seed, config) {
+export function createDensityField(graph, seed, config, biome) {
   const rng = makeRng(seed ^ 0xcafe);
   const noise = makeNoise3D(seed);
-  const { noiseAmp, noiseFreq, tunnelRadius } = config.world;
+  const { tunnelRadius } = config.world;
+  const noiseAmp = biome?.noiseAmp ?? config.world.noiseAmp;
+  const noiseFreq = biome?.noiseFreq ?? config.world.noiseFreq;
 
   const nodeById = new Map();
   for (const n of graph.nodes) nodeById.set(n.id, n);
 
-  // ---------- room spheres ----------
-  // each: cx,cy,cz,r, boundSq = (r + BASE)^2 : outside this, sd > BASE, can't beat base
-  const spheres = graph.nodes.map((n) => {
-    const r = n.radius;
-    const bound = r + BASE;
-    return { cx: n.pos.x, cy: n.pos.y, cz: n.pos.z, r, boundSq: bound * bound, built: n.style === 'built' };
-  });
+  // ---------- room carvers ----------
+  // spheres: cx,cy,cz,r, boundSq = (r + BASE)^2 : outside this, sd > BASE, can't beat base
+  // shafts:  vertical capsules (see header); always cave-style, so no built tracking
+  const shaftR = config.world.shaftRadiusScale ?? 0.55;
+  const shaftH = config.world.shaftHalfLen ?? 1.0;
+  const spheres = [];
+  const shafts = [];
+  for (const n of graph.nodes) {
+    if (n.shape === 'shaft') {
+      const capR = n.radius * shaftR;
+      const halfLen = n.radius * shaftH;
+      const bound = halfLen + capR + BASE;
+      shafts.push({ cx: n.pos.x, cy: n.pos.y, cz: n.pos.z, capR, halfLen, boundSq: bound * bound });
+    } else {
+      const r = n.radius;
+      const bound = r + BASE;
+      spheres.push({ cx: n.pos.x, cy: n.pos.y, cz: n.pos.z, r, boundSq: bound * bound, built: n.style === 'built' });
+    }
+  }
 
   // built room flat floors: rock unioned back below floorY, clipped to the room sphere
   const floors = graph.nodes
@@ -221,6 +246,18 @@ export function createDensityField(graph, seed, config) {
       if (s.built && sd < builtMin) builtMin = sd;
     }
 
+    // vertical shaft capsules (cave-only carvers)
+    for (let i = 0; i < shafts.length; i++) {
+      const s = shafts[i];
+      const dx = x - s.cx, dy = y - s.cy, dz = z - s.cz;
+      if (dx * dx + dy * dy + dz * dz > s.boundSq) continue;
+      let ly = dy;
+      if (ly > s.halfLen) ly = s.halfLen; else if (ly < -s.halfLen) ly = -s.halfLen;
+      const ddy = dy - ly;
+      const sd = Math.sqrt(dx * dx + ddy * ddy + dz * dz) - s.capR;
+      if (sd < d) d = sd;
+    }
+
     for (let i = 0; i < edgePolylines.length; i++) {
       const e = edgePolylines[i];
       const dx = x - e.cx, dy = y - e.cy, dz = z - e.cz;
@@ -296,6 +333,11 @@ export function createDensityField(graph, seed, config) {
     min.x = Math.min(min.x, s.cx - s.r); min.y = Math.min(min.y, s.cy - s.r); min.z = Math.min(min.z, s.cz - s.r);
     max.x = Math.max(max.x, s.cx + s.r); max.y = Math.max(max.y, s.cy + s.r); max.z = Math.max(max.z, s.cz + s.r);
   }
+  for (const s of shafts) {
+    const rx = s.capR, ry = s.halfLen + s.capR;
+    min.x = Math.min(min.x, s.cx - rx); min.y = Math.min(min.y, s.cy - ry); min.z = Math.min(min.z, s.cz - rx);
+    max.x = Math.max(max.x, s.cx + rx); max.y = Math.max(max.y, s.cy + ry); max.z = Math.max(max.z, s.cz + rx);
+  }
   for (const e of edgePolylines) {
     for (const seg of e.segments) {
       for (const p of [[seg.ax, seg.ay, seg.az], [seg.bx, seg.by, seg.bz]]) {
@@ -310,6 +352,7 @@ export function createDensityField(graph, seed, config) {
 
   const decorRooms = graph.nodes.map((n) => ({
     id: n.id, pos: n.pos.clone(), radius: n.radius, style: n.style || 'cave', kind: n.kind,
+    shape: n.shape || 'sphere',
   }));
 
   return {

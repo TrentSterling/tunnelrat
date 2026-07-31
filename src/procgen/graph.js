@@ -5,10 +5,15 @@
 //
 // generateLevelGraph(seed:number, config:CONFIG) -> graph object:
 // {
-//   nodes: [{ id:number, pos:THREE.Vector3, radius:number, kind:string, style:string }],
+//   nodes: [{ id:number, pos:THREE.Vector3, radius:number, kind:string, style:string, shape:string }],
 //     kind is one of 'spawn' | 'key' | 'reactor' | 'exit' | 'room'
 //     style is 'cave' | 'built' : reactor + exit always 'built', plus
 //       ~config.built.roomFraction of the remaining rooms (seeded).
+//     shape is 'sphere' | 'shaft' | 'cavern' : plain CAVE rooms only get variety
+//       (~config.world.shaftFraction vertical shaft capsules, ~cavernFraction grand
+//       caverns with radius * cavernScale); mission rooms + built rooms stay 'sphere'.
+//       'cavern' is still carved as a sphere, just bigger; 'shaft' is carved by
+//       density.js as a vertical capsule (see its contract).
 //   edges: [{ a:number, b:number, locked:boolean, style:string }],
 //     exactly ONE edge has locked=true (the door). style 'built' when both ends are
 //     built, the locked edge is always 'built', plus random extras until
@@ -386,6 +391,24 @@ export function generateLevelGraph(seed, config) {
 
   // 5. construction styles: mines mix organic caves with built industrial sections.
   assignStyles(nodes, edges, lockedEdgeObj, reactorId, exitId, rng, config);
+
+  // 6. shape variety: plain CAVE rooms only. Mission rooms (spawn/key/reactor/exit)
+  // and built rooms keep regular spheres (flat floors + gameplay clearances rely on it).
+  // This pass runs LAST so earlier rng draws (and therefore layouts) are unchanged.
+  const shaftFrac = config.world.shaftFraction ?? 0.2;
+  const cavernFrac = config.world.cavernFraction ?? 0.1;
+  const cavernScale = config.world.cavernScale ?? 1.4;
+  for (const n of nodes) {
+    n.shape = 'sphere';
+    if (n.kind !== 'room' || n.style !== 'cave') continue;
+    const roll = rng();
+    if (roll < shaftFrac) {
+      n.shape = 'shaft';
+    } else if (roll < shaftFrac + cavernFrac) {
+      n.shape = 'cavern';
+      n.radius *= cavernScale;
+    }
+  }
 
   return {
     nodes,

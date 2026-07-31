@@ -11,9 +11,19 @@
 //   rebuild(graph)             // new level (then call setCaveMesh with the new group)
 //   setCaveMesh(caveGroup)     // full cave mesh rendered as a scanner hologram
 //   setKeyTaken()              // hide the key POI marker after pickup
+//   mapAll()                   // INTEGRATOR-ADDED: cheat console MAPALL, visit() every node
 //   render(renderer, shipPos, shipQuat, enemies)  // call AFTER main scene render when visible:
 //     renderer.autoClear=false, clear depth only, render map scene fullscreen with its
 //     own camera orbiting the graph centroid (slow auto-rotate), then restore state.
+//   miniVisible: boolean        // default true; always-on corner inset, independent of `visible`
+//   toggleMini()                // flip miniVisible
+//   renderMini(renderer, shipPos, shipQuat, enemies)  // call AFTER main scene render (and after
+//     render() if the full map ran this frame too): no-op while `visible` or !miniVisible.
+//     Scissored inset (bottom-center-right, above the HUD energy bar) rendering the SAME
+//     map scene through a second dedicated camera that yaw-follows the ship close in
+//     (~40m back, ~25m up, narrow far plane) so only the local neighborhood shows.
+//     Draws a CRT-green CSS border div (id #miniMapFrame, appended to document.body)
+//     around the inset; hidden whenever renderMini is a no-op.
 // }
 //
 // Visuals: edges as THREE.LineSegments (cyan, locked edge red until unlocked: expose
@@ -27,6 +37,10 @@ import * as THREE from 'three';
 import { CONFIG } from './config.js';
 
 const _size = new THREE.Vector2();
+const _miniForward = new THREE.Vector3();
+const _miniCamPos = new THREE.Vector3();
+const _prevViewport = new THREE.Vector4();
+const _prevScissor = new THREE.Vector4();
 
 // shared, module-scope geometry (no per-frame / per-rebuild allocation of these)
 const nodeGeo = new THREE.IcosahedronGeometry(1, 0);
@@ -61,10 +75,27 @@ const poiRingGeo = new THREE.TorusGeometry(5, 0.5, 6, 24);
 export class Automap {
   constructor(graph) {
     this.visible = false;
+    this.miniVisible = true;
 
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(55, 1, 1, 3000);
     this.scene.add(this.camera);
+
+    // always-on corner inset: separate camera, narrow far plane, yaw-follows the ship
+    // close in. Not parented to the scene (doesn't need to be, render() takes it direct).
+    this.miniCamera = new THREE.PerspectiveCamera(50, 280 / 200, 1, 140);
+    this._enemiesUpdatedThisFrame = false; // guards double marker-pool update if render()
+                                            // and renderMini() both fire in the same tick
+
+    // CRT-green border for the inset, a plain CSS div (sibling of #mapNote, same body);
+    // renderMini() positions/shows it, hides it whenever the inset itself is a no-op.
+    this.miniFrameEl = document.createElement('div');
+    this.miniFrameEl.id = 'miniMapFrame';
+    this.miniFrameEl.style.cssText =
+      'position:absolute; z-index:6; pointer-events:none; display:none; ' +
+      'border:1px solid rgba(92,255,138,.55); box-shadow:0 0 10px rgba(92,255,138,.2) inset; ' +
+      'font-family:"Courier New",monospace;';
+    document.body.appendChild(this.miniFrameEl);
 
     // fullscreen dim backdrop, parented to the camera so it always covers the view;
     // renderOrder -1 + no depth test/write = painter's-algorithm background, no color clear needed
@@ -258,9 +289,26 @@ export class Automap {
     }
   }
 
+  // cheat console MAPALL: reveal every node (and, transitively via visit()'s edge
+  // check, every edge touching a visited node) in one shot. INTEGRATOR-ADDED: not in
+  // the original class contract above, wired per the integration mission's explicit
+  // "add mapAll() to automap.js if missing" instruction.
+  mapAll() {
+    for (const id of this.nodeMeshes.keys()) this.visit(id);
+  }
+
   setDoorOpen(open) {
     if (this.lockedLine) this.lockedLine.material.color.set(open ? COLOR.doorOpen : COLOR.door);
     if (this.poi.door) this.poi.door.material.color.set(open ? COLOR.doorOpen : COLOR.door);
+  }
+
+  // fires _updateEnemyMarkers at most once per animation frame, no matter which of
+  // render()/renderMini() (or both) call it; the flag resets on the next rAF tick
+  _maybeUpdateEnemyMarkers(enemies, time) {
+    if (this._enemiesUpdatedThisFrame) return;
+    this._enemiesUpdatedThisFrame = true;
+    this._updateEnemyMarkers(enemies, time);
+    requestAnimationFrame(() => { this._enemiesUpdatedThisFrame = false; });
   }
 
   // enemies: live list from EnemyManager.list(); markers pooled and repositioned
@@ -299,7 +347,7 @@ export class Automap {
     this.shipMesh.quaternion.copy(shipQuat);
 
     const time = performance.now() * 0.001;
-    this._updateEnemyMarkers(enemies, time);
+    this._maybeUpdateEnemyMarkers(enemies, time);
     if (this.poi.key) this.poi.key.rotation.y = time * 1.5;
     if (this.poi.reactor) this.poi.reactor.rotation.y = time;
 
@@ -331,5 +379,86 @@ export class Automap {
     renderer.clearDepth();
     renderer.render(this.scene, this.camera);
     renderer.autoClear = prevAutoClear;
+  }
+
+  toggleMini() {
+    this.miniVisible = !this.miniVisible;
+  }
+
+  // Always-on corner inset. No-op while the full map is open (it already covers the
+  // screen) or miniVisible is false. Scissored viewport, own camera, own CSS border;
+  // fully restores renderer state on exit so the main frame render() is unaffected.
+  renderMini(renderer, shipPos, shipQuat, enemies) {
+    if (this.visible || !this.miniVisible) {
+      this.miniFrameEl.style.display = 'none';
+      return;
+    }
+
+    const now = performance.now();
+    const time = now * 0.001;
+    this._maybeUpdateEnemyMarkers(enemies, time);
+    if (this.poi.key) this.poi.key.rotation.y = time * 1.5;
+    if (this.poi.reactor) this.poi.reactor.rotation.y = time;
+
+    this.shipMesh.position.copy(shipPos);
+    this.shipMesh.quaternion.copy(shipQuat);
+
+    // camera: yaw-follow only (flatten ship orientation to heading), fixed offset
+    // behind/above, close enough that the inset always reads as "your immediate area"
+    _miniForward.set(0, 0, -1).applyQuaternion(shipQuat);
+    _miniForward.y = 0;
+    if (_miniForward.lengthSq() < 1e-6) _miniForward.set(0, 0, -1);
+    _miniForward.normalize();
+    _miniCamPos.copy(shipPos).addScaledVector(_miniForward, -40);
+    _miniCamPos.y += 25;
+    this.miniCamera.position.copy(_miniCamPos);
+    this.miniCamera.lookAt(shipPos);
+
+    const pulse = 4.5 + Math.sin(now * 0.006) * 1.4;
+    this.shipHalo.position.copy(shipPos);
+    this.shipHalo.scale.setScalar(pulse);
+    this.shipHalo.quaternion.copy(this.miniCamera.quaternion);
+
+    // inset rect in CSS pixels: bottom-center-right, above the HUD energy bar
+    // (hud.js .hud-bottomright sits at bottom:24px, ~50px tall with label+value)
+    renderer.getSize(_size);
+    const cssW = 280, cssH = 200;
+    const cssX = _size.x - 300;
+    const cssYFromBottom = 130;
+
+    const dpr = renderer.getPixelRatio();
+    const vx = Math.round(cssX * dpr);
+    const vy = Math.round(cssYFromBottom * dpr);
+    const vw = Math.round(cssW * dpr);
+    const vh = Math.round(cssH * dpr);
+
+    if (this.miniCamera.aspect !== cssW / cssH) {
+      this.miniCamera.aspect = cssW / cssH;
+      this.miniCamera.updateProjectionMatrix();
+    }
+
+    const prevAutoClear = renderer.autoClear;
+    const prevScissorTest = renderer.getScissorTest();
+    renderer.getViewport(_prevViewport);
+    renderer.getScissor(_prevScissor);
+
+    renderer.setScissorTest(true);
+    renderer.setViewport(vx, vy, vw, vh);
+    renderer.setScissor(vx, vy, vw, vh);
+    renderer.autoClear = false;
+    renderer.clearDepth();
+    renderer.render(this.scene, this.miniCamera);
+
+    renderer.setViewport(_prevViewport);
+    renderer.setScissor(_prevScissor);
+    renderer.setScissorTest(prevScissorTest);
+    renderer.autoClear = prevAutoClear;
+
+    // border div: CSS coords are top-left origin, the rect above is bottom-origin
+    this.miniFrameEl.style.left = cssX + 'px';
+    this.miniFrameEl.style.top = (_size.y - cssYFromBottom - cssH) + 'px';
+    this.miniFrameEl.style.width = cssW + 'px';
+    this.miniFrameEl.style.height = cssH + 'px';
+    this.miniFrameEl.style.display = 'block';
   }
 }

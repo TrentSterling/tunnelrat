@@ -19,11 +19,13 @@
 // }
 //
 // Tab must preventDefault (browser focus stealing). Also preventDefault on Space and
-// arrow keys. Listen on window; ignore key events when an <input> has focus (none exist,
-// belt and braces). Mouse deltas only accumulate while pointerLocked.
+// arrow keys. Backquote (cheat console toggle) also prevented so it never types a
+// literal backtick anywhere. Listen on window; ignore key events when an <input> has
+// focus (belt and braces -- the console's own input stops propagation before it gets
+// here, see src/console.js). Mouse deltas only accumulate while pointerLocked.
 
 const PREVENT_DEFAULT_CODES = new Set([
-  'Tab', 'Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'F3',
+  'Tab', 'Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'F3', 'Backquote',
 ]);
 
 function isTypingIntoField() {

@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>TUNNELRAT biome viewer</title>
+<style>
+  * { margin:0; padding:0; }
+  body { background:#000; overflow:hidden; font-family:'Courier New',monospace; }
+  #tag { position:fixed; top:10px; left:12px; color:#5cff8a; font-size:14px; letter-spacing:3px; z-index:5; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://esm.sh/three@0.179.0",
+    "three/addons/": "https://esm.sh/three@0.179.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="tag"></div>
+<script type="module">
+// biomeview.html : standalone biome/props eyeball harness (no game loop, no ship).
+// Usage: /tools/biomeview.html?depth=2&seed=1337&at=prop|room|shaft
+// Builds a level via buildLevel(seed, CONFIG, depth), applies the biome fog, parks
+// a camera at an interesting spot and renders. window.BV = { ready, biome, props }
+// for CDP polling (tools/biomeshot.mjs).
+import * as THREE from 'three';
+import { CONFIG } from '../src/config.js';
+import { buildLevel } from '../src/procgen/levelbuilder.js';
+
+const q = new URLSearchParams(location.search);
+const depth = parseInt(q.get('depth') || '1', 10);
+const seed = parseInt(q.get('seed') || String(CONFIG.seed), 10);
+const at = q.get('at') || 'prop';
+
+window.BV = { ready: false, biome: null, props: {} };
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(72, innerWidth / innerHeight, 0.1, 400);
+
+const level = buildLevel(seed, CONFIG, depth);
+scene.add(level.caveGroup);
+scene.background = new THREE.Color(level.biome.fog);
+scene.fog = new THREE.FogExp2(level.biome.fog, level.biome.fogDensity);
+scene.add(new THREE.AmbientLight(0x404050, 0.5));
+const headlamp = new THREE.PointLight(CONFIG.colors.headlamp, 700, 90, 1.6);
+camera.add(headlamp);
+scene.add(camera);
+
+// collect props info
+const propsGroup = level.caveGroup.getObjectByName('propsGroup');
+const counts = {};
+const anchors = []; // [name, Vector3]
+if (propsGroup) {
+  for (const c of propsGroup.children) {
+    counts[c.name] = c.isInstancedMesh ? c.count : 1;
+    if (c.isInstancedMesh && c.count > 0) {
+      const m = new THREE.Matrix4();
+      c.getMatrixAt(Math.floor(c.count / 2), m);
+      anchors.push([c.name, new THREE.Vector3().setFromMatrixPosition(m)]);
+    } else if (c.name === 'prop-drillrig') {
+      anchors.unshift([c.name, c.position.clone()]); // drill rig is the best photo op
+    }
+  }
+}
+window.BV.biome = level.biome.name;
+window.BV.props = counts;
+window.BV.level = level; // probe hook for CDP verification scripts
+document.getElementById('tag').textContent =
+  'DEPTH ' + depth + ' / ' + level.biome.name.toUpperCase() + ' / ' + JSON.stringify(counts);
+
+// pick camera target
+let target = null;
+let shaftNode = null;
+if (at === 'shaft') {
+  shaftNode = level.graph.nodes.find((n) => n.shape === 'shaft');
+  if (shaftNode) target = shaftNode.pos.clone();
+}
+if (!target && anchors.length > 0) {
+  const preferred = anchors.find(([n]) => n === 'prop-drillrig' || n.includes('crate') || n.includes('stal') || n.includes('crystal'));
+  target = (preferred || anchors[0])[1].clone();
+}
+if (!target) target = level.spawnPos.clone();
+
+// park the camera pulled back toward the owning room center so the cluster is framed
+if (shaftNode) {
+  // sit low in the shaft, look up its length so the verticality reads
+  camera.position.copy(shaftNode.pos).add(new THREE.Vector3(shaftNode.radius * 0.2, -shaftNode.radius * 0.7, 0));
+  camera.lookAt(shaftNode.pos.x, shaftNode.pos.y + shaftNode.radius * 1.4, shaftNode.pos.z);
+} else {
+  let camPos = target.clone().add(new THREE.Vector3(0, 2.5, 8));
+  let best = Infinity;
+  for (const n of level.graph.nodes) {
+    const d = n.pos.distanceTo(target);
+    if (d < best) { best = d; camPos = n.pos.clone().lerp(target, 0.35).add(new THREE.Vector3(0, n.radius * 0.2, 0)); }
+  }
+  camera.position.copy(camPos);
+  camera.lookAt(target);
+}
+
+renderer.render(scene, camera);
+requestAnimationFrame(() => { renderer.render(scene, camera); window.BV.ready = true; });
+</script>
+</body>
+</html>
