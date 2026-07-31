@@ -306,6 +306,7 @@ function handleEvents(events) {
 // ---------- loop ----------
 const clock = new THREE.Clock();
 const _wreckNormal = new THREE.Vector3();
+const lastCrumb = new THREE.Vector3(1e9, 1e9, 1e9); // far away so the first pellet drops immediately
 
 function frame() {
   requestAnimationFrame(frame);
@@ -353,6 +354,12 @@ function frame() {
     if (mapPollTimer <= 0) {
       mapPollTimer = 0.25;
       automap.visit(nearestNodeId(level.graph, ship.object3d.position));
+    }
+
+    // breadcrumb pellet every ~4m of travel
+    if (lastCrumb.distanceToSquared(ship.object3d.position) > 16) {
+      lastCrumb.copy(ship.object3d.position);
+      automap.addCrumb(lastCrumb);
     }
 
     // escape phase fx

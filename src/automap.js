@@ -106,7 +106,37 @@ export class Automap {
     this.enemyMarkers = []; // pooled octahedra, grown on demand
     this.poi = {};          // key / door / exit / reactor marker meshes
 
+    // breadcrumb pellets: ring buffer of everywhere the ship has been, pacman style
+    this.CRUMB_MAX = 2048;
+    this._crumbCount = 0;
+    this._crumbHead = 0;
+    const crumbGeo = new THREE.BufferGeometry();
+    crumbGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(this.CRUMB_MAX * 3), 3));
+    crumbGeo.setDrawRange(0, 0);
+    this.crumbPoints = new THREE.Points(crumbGeo, new THREE.PointsMaterial({
+      color: 0x8fffb0, size: 1.6, sizeAttenuation: true,
+      transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false,
+    }));
+    this.crumbPoints.frustumCulled = false;
+    this.scene.add(this.crumbPoints);
+
     this._build(graph);
+  }
+
+  // drop a pellet (caller handles spacing); ring buffer wraps over the oldest
+  addCrumb(pos) {
+    const attr = this.crumbPoints.geometry.getAttribute('position');
+    attr.setXYZ(this._crumbHead, pos.x, pos.y, pos.z);
+    this._crumbHead = (this._crumbHead + 1) % this.CRUMB_MAX;
+    if (this._crumbCount < this.CRUMB_MAX) this._crumbCount++;
+    this.crumbPoints.geometry.setDrawRange(0, this._crumbCount);
+    attr.needsUpdate = true;
+  }
+
+  clearCrumbs() {
+    this._crumbCount = 0;
+    this._crumbHead = 0;
+    this.crumbPoints.geometry.setDrawRange(0, 0);
   }
 
   // Full cave mesh as a scanner hologram: reuses the live chunk geometries (no copies).
@@ -209,6 +239,7 @@ export class Automap {
 
   rebuild(graph) {
     this._build(graph);
+    this.clearCrumbs();
   }
 
   toggle() {

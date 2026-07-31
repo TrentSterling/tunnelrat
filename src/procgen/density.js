@@ -208,6 +208,7 @@ export function createDensityField(graph, seed, config) {
   function sample(x, y, z) {
     let d = BASE;
     let builtMin = BASE; // min signed distance over BUILT carvers only (free to track)
+    let tunnelMin = BASE; // min signed distance over TUNNEL carves; floors must not fill tunnels
 
     for (let i = 0; i < spheres.length; i++) {
       const s = spheres[i];
@@ -232,6 +233,7 @@ export function createDensityField(graph, seed, config) {
         const dist = capsuleDist(x, y, z, seg.ax, seg.ay, seg.az, seg.bx, seg.by, seg.bz);
         const sd = dist - seg.r; // per-segment radius carries the mouth flare
         if (sd < d) d = sd;
+        if (sd < tunnelMin) tunnelMin = sd;
         if (eBuilt && sd < builtMin) builtMin = sd;
       }
     }
@@ -245,8 +247,10 @@ export function createDensityField(graph, seed, config) {
       d += fbm3(noise, x * noiseFreq, y * noiseFreq, z * noiseFreq) * noiseAmp * fade;
     }
 
-    // built room flat floors: union rock back below floorY, clipped to the sphere.
-    // Applied after noise so the floor plane stays perfectly flat.
+    // built room flat floors: union rock back below floorY, clipped to the sphere,
+    // AND clipped by tunnelMin so the slab can never seal a corridor mouth that
+    // meets the room at or below floor level (the "tunnel cap" bug: ribs marched
+    // through a rock wall where the floor slab crossed the corridor carve).
     for (let i = 0; i < floors.length; i++) {
       const f = floors[i];
       if (y >= f.floorY + 4) continue;
@@ -254,7 +258,7 @@ export function createDensityField(graph, seed, config) {
       const distSq = dx * dx + dy * dy + dz * dz;
       if (distSq > f.boundSq) continue;
       const dist = Math.sqrt(distSq);
-      const hs = Math.min(f.floorY - y, f.r + 2 - dist);
+      const hs = Math.min(f.floorY - y, f.r + 2 - dist, tunnelMin);
       if (hs > d) d = hs;
     }
 
