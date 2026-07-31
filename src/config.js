@@ -43,10 +43,17 @@ export const CONFIG = {
   },
 
   weapons: {
-    laser: { speed: 90, damage: 12, cooldown: 0.16, energyCost: 1.6, color: 0x5cff8a, radius: 0.35, life: 2.2 },
-    enemyBolt: { speed: 46, damage: 9, color: 0xff5a3b, radius: 0.4, life: 3.5 },
-    sniperBolt: { speed: 74, damage: 14, color: 0x7dff9a, radius: 0.35, life: 3.0 },
-    reactorBolt: { speed: 34, damage: 16, color: 0xffb13b, radius: 0.7, life: 5.0 },
+    // aoe: every impact detonates; radius (m), damage at center (linear falloff to 0
+    // at radius, direct-hit target excluded, it already took full damage), impulse
+    // (m/s velocity shove at center, applies to EVERYTHING with a velocity incl. you)
+    laser: { speed: 90, damage: 12, cooldown: 0.16, energyCost: 1.6, color: 0x5cff8a, radius: 0.35, life: 2.2,
+      aoe: { radius: 2.6, damage: 4, impulse: 7 } },
+    enemyBolt: { speed: 46, damage: 9, color: 0xff5a3b, radius: 0.4, life: 3.5,
+      aoe: { radius: 2.6, damage: 4, impulse: 7 } },
+    sniperBolt: { speed: 74, damage: 14, color: 0x7dff9a, radius: 0.35, life: 3.0,
+      aoe: { radius: 2.0, damage: 5, impulse: 10 } },
+    reactorBolt: { speed: 34, damage: 16, color: 0xffb13b, radius: 0.7, life: 5.0,
+      aoe: { radius: 5.5, damage: 10, impulse: 16 } },
   },
 
   enemies: {

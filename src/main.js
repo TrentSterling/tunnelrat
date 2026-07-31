@@ -14,6 +14,7 @@ import { GameState } from './gamestate.js';
 import { sfx } from './sfx.js';
 import { buildRobot, scorch } from './robots.js';
 import { DeathSite } from './deathsite.js';
+import { MatrixView } from './matrix.js';
 import { makeRng } from './util/rng.js';
 
 const app = document.getElementById('app');
@@ -44,6 +45,8 @@ camera.add(headlamp, headlamp.target);
 
 const strobe = new THREE.PointLight(0xff2020, 0, 120); // escape-phase red strobe
 scene.add(strobe);
+
+const matrix = new MatrixView(scene); // F3: see into the game's brain
 
 addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
@@ -260,6 +263,7 @@ function loadLevel(newSeed, newDepth) {
     else automap.rebuild(level.graph);
     automap.setCaveMesh(level.caveGroup);
     automap.visit(level.graph.spawnId);
+    matrix.setLevel(level.graph);
 
     ship.onImpact = (speed) => { sfx.play('hitWall'); shake = Math.min(1, shake + speed * 0.03); };
 
@@ -331,6 +335,11 @@ function frame() {
       onShipHit: (dmg) => { ship.takeDamage(dmg); hud.flashDamage(); sfx.play('hitWall'); shake = Math.min(1, shake + CONFIG.game.hitShake); },
       onEnemyHit: () => sfx.play('hitEnemy'),
       onWallHit: () => {},
+      onExplosion: (pos, radius) => {
+        const d = pos.distanceTo(ship.object3d.position);
+        if (d < radius + 16) shake = Math.min(1.4, shake + (radius / 6) * (1 - d / (radius + 16)));
+        sfx.play(radius >= 4 ? 'explode' : 'hitWall');
+      },
     });
     enemies.update(dt, ship, level.field, level.graph);
     handleEvents(gamestate.update(dt, ship));
@@ -441,6 +450,8 @@ function frame() {
   }
   if (input.justPressed('Tab')) automap.toggle();
   if (input.justPressed('KeyM')) sfx.setMuted(!sfx.muted);
+  if (input.justPressed('F3')) matrix.toggle();
+  if (matrix.visible) matrix.update({ ship, enemies, projectiles, graph: level.graph });
   if (input.justPressed('KeyV') && gamestate.phase !== 'dead') {
     thirdPerson = !thirdPerson;
     applyCameraMode();
@@ -498,6 +509,7 @@ window.TR = {
     },
     god() { ship.takeDamage = () => false; ship.spendEnergy = () => true; },
     toggleMap() { automap.toggle(); },
+    matrix() { matrix.toggle(); },
     showcase(seed = 42) { // one of each robot class lined up ahead of the ship, for eyeballing
       // a showcase you can't see the player ship in isn't much of a showcase: force
       // third-person and a level orientation so both the ship and the lineup are framed

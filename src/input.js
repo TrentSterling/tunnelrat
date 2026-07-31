@@ -23,7 +23,7 @@
 // belt and braces). Mouse deltas only accumulate while pointerLocked.
 
 const PREVENT_DEFAULT_CODES = new Set([
-  'Tab', 'Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
+  'Tab', 'Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'F3',
 ]);
 
 function isTypingIntoField() {

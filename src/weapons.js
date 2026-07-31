@@ -30,7 +30,9 @@
 import * as THREE from 'three';
 
 const POOL_SIZE = 128;
+const BOOM_POOL = 12;
 const UNIT_Z = new THREE.Vector3(0, 0, 1);
+const _splashDir = new THREE.Vector3();
 
 export class ProjectileSystem {
   constructor(scene, field, config) {
@@ -85,6 +87,87 @@ export class ProjectileSystem {
       };
       this._free.push(i);
     }
+
+    // pooled AoE explosion visuals: expanding additive shells, one shared geometry
+    this._boomGeo = new THREE.SphereGeometry(1, 10, 7);
+    this._booms = [];
+    for (let i = 0; i < BOOM_POOL; i++) {
+      const mesh = new THREE.Mesh(this._boomGeo, new THREE.MeshBasicMaterial({
+        color: 0xffa030, transparent: true, opacity: 0,
+        blending: THREE.AdditiveBlending, depthWrite: false,
+      }));
+      mesh.visible = false;
+      scene.add(mesh);
+      this._booms.push({ mesh, t: -1, radius: 1 });
+    }
+    this._boomLight = new THREE.PointLight(0xffa030, 0, 40); // one shared light, latest boom
+    scene.add(this._boomLight);
+
+    // ring buffer for debug/matrix view: recent detonations with radius + age
+    this.recentExplosions = [];
+  }
+
+  // EVERY impact detonates: visual shell + splash damage (linear falloff, direct-hit
+  // target excluded, it already took full contact damage) + velocity impulse to
+  // everything nearby that has a velocity, the player ship very much included.
+  _explode(pos, wcfg, ctx, directTarget) {
+    const aoe = wcfg.aoe;
+    if (!aoe) return;
+
+    // visual: recycle the oldest inactive (or oldest, period) boom slot
+    let slot = this._booms.find((b) => b.t < 0);
+    if (!slot) { slot = this._booms[0]; for (const b of this._booms) if (b.t > slot.t) slot = b; }
+    slot.t = 0;
+    slot.radius = aoe.radius;
+    slot.mesh.material.color.set(wcfg.color);
+    slot.mesh.position.copy(pos);
+    slot.mesh.visible = true;
+    this._boomLight.color.set(wcfg.color);
+    this._boomLight.position.copy(pos);
+    this._boomLight.intensity = 60 + aoe.radius * 25;
+
+    this.recentExplosions.push({ pos: pos.clone(), radius: aoe.radius, t: 0 });
+    if (this.recentExplosions.length > 8) this.recentExplosions.shift();
+
+    const enemyList = ctx.enemies ? ctx.enemies.list() : null;
+    if (enemyList) {
+      for (let i = 0; i < enemyList.length; i++) {
+        const e = enemyList[i];
+        if (!e.alive) continue;
+        const d = pos.distanceTo(e.pos);
+        if (d >= aoe.radius) continue;
+        const falloff = 1 - d / aoe.radius;
+        _splashDir.copy(e.pos).sub(pos);
+        if (_splashDir.lengthSq() < 1e-6) _splashDir.set(0, 1, 0); else _splashDir.normalize();
+        if (e.velocity) e.velocity.addScaledVector(_splashDir, aoe.impulse * falloff);
+        if (e !== directTarget) e.takeDamage(aoe.damage * falloff);
+      }
+    }
+    const ship = ctx.ship;
+    if (ship && ship.alive) {
+      const d = pos.distanceTo(ship.object3d.position);
+      if (d < aoe.radius) {
+        const falloff = 1 - d / aoe.radius;
+        _splashDir.copy(ship.object3d.position).sub(pos);
+        if (_splashDir.lengthSq() < 1e-6) _splashDir.set(0, 1, 0); else _splashDir.normalize();
+        ship.velocity.addScaledVector(_splashDir, aoe.impulse * falloff);
+        if (directTarget !== ship && ctx.onShipHit) ctx.onShipHit(aoe.damage * falloff);
+      }
+    }
+    if (ctx.onExplosion) ctx.onExplosion(pos, aoe.radius);
+  }
+
+  _updateBooms(dt) {
+    for (const b of this._booms) {
+      if (b.t < 0) continue;
+      b.t += dt;
+      const k = b.t / 0.35;
+      if (k >= 1) { b.t = -1; b.mesh.visible = false; continue; }
+      b.mesh.scale.setScalar(Math.max(0.05, b.radius * (0.25 + 0.75 * k)));
+      b.mesh.material.opacity = 0.65 * (1 - k);
+    }
+    this._boomLight.intensity = Math.max(0, this._boomLight.intensity - dt * 500);
+    for (const ex of this.recentExplosions) ex.t += dt;
   }
 
   spawn(owner, pos, dir, kind) {
@@ -139,6 +222,7 @@ export class ProjectileSystem {
     const field = this.field;
     const ship = ctx.ship;
     const shipRadius = this.config.ship.radius;
+    this._updateBooms(dt);
     // Fetch the enemy list once per frame, not once per projectile.
     const enemyList = ctx.enemies ? ctx.enemies.list() : null;
 
@@ -150,10 +234,13 @@ export class ProjectileSystem {
       p.mesh.position.copy(p.pos);
       p.life -= dt;
 
-      if (p.life <= 0) { this._despawn(i); continue; }
+      if (p.life <= 0) { this._despawn(i); continue; } // fizzle, no detonation
+
+      const wcfg = this.config.weapons[p.kind];
 
       if (field.sample(p.pos.x, p.pos.y, p.pos.z) >= 0) {
         if (ctx.onWallHit) ctx.onWallHit(p.pos);
+        this._explode(p.pos, wcfg, ctx, null);
         this._despawn(i);
         continue;
       }
@@ -167,6 +254,7 @@ export class ProjectileSystem {
           if (p.pos.distanceToSquared(enemy.pos) < rr * rr) {
             enemy.takeDamage(p.damage);
             if (ctx.onEnemyHit) ctx.onEnemyHit(enemy, p.damage);
+            this._explode(p.pos, wcfg, ctx, enemy);
             hit = true;
             break;
           }
@@ -176,6 +264,7 @@ export class ProjectileSystem {
         const rr = p.radius + shipRadius;
         if (p.pos.distanceToSquared(ship.object3d.position) < rr * rr) {
           if (ctx.onShipHit) ctx.onShipHit(p.damage);
+          this._explode(p.pos, wcfg, ctx, ship);
           this._despawn(i);
           continue;
         }
@@ -191,5 +280,8 @@ export class ProjectileSystem {
       p.mesh.visible = false;
       this._free.push(i);
     }
+    for (const b of this._booms) { b.t = -1; b.mesh.visible = false; }
+    this._boomLight.intensity = 0;
+    this.recentExplosions.length = 0;
   }
 }
