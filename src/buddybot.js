@@ -257,10 +257,21 @@ export class BuddyBot {
       this._repathTimer -= dt;
       if (this._repathTimer <= 0 || !this._path) {
         this._repathTimer = this.cfg.repathInterval;
-        const fromId = nearestNodeId(graph, shipPos);
+        // path from the BUDDY's own node (not the ship's): repathing from the ship
+        // yanked the bot back to path[1] every second and flip-flopped whenever the
+        // pilot hovered between two rooms; the leash already keeps the bot honest
+        const fromId = nearestNodeId(graph, this.pos);
         const toId = nearestNodeId(graph, this._objectivePos);
-        this._path = findPath(graph, fromId, toId, true);
-        this._pathIndex = 1;
+        const newPath = findPath(graph, fromId, toId, true);
+        if (newPath) {
+          // preserve progress: if the node we were flying to is on the new path,
+          // keep aiming at it instead of resetting to the start
+          const currentTargetId = this._path && this._pathIndex < this._path.length
+            ? this._path[this._pathIndex] : null;
+          const keep = currentTargetId !== null ? newPath.indexOf(currentTargetId) : -1;
+          this._path = newPath;
+          this._pathIndex = keep > 0 ? keep : 1;
+        }
       }
       wp = this._pathTarget(graph);
     } else if (this._objectivePos) {
@@ -298,6 +309,27 @@ export class BuddyBot {
     const distToTarget = _desired.length();
     if (distToTarget > 1e-4) {
       _desired.multiplyScalar(1 / distToTarget);
+
+      if (field) {
+        // lookahead wall-slide: if flying straight at the target would hit rock in
+        // the next ~3.5m (tunnels CURVE; node centers are straight-line targets),
+        // bend the desired direction along the wall instead of pinning against it
+        const la = Math.min(3.5, distToTarget);
+        const px = this.pos.x + _desired.x * la;
+        const py = this.pos.y + _desired.y * la;
+        const pz = this.pos.z + _desired.z * la;
+        if (field.sample(px, py, pz) > -1.4) {
+          field.collisionNormal(px, py, pz, _normal);
+          _desired.addScaledVector(_normal, 1.1).normalize(); // slide + push off
+        }
+        // soft standing repulsion from nearby walls so the bot centers itself in tunnels
+        const here = field.sample(this.pos.x, this.pos.y, this.pos.z);
+        if (here > -2.5) {
+          field.collisionNormal(this.pos.x, this.pos.y, this.pos.z, _normal);
+          this.velocity.addScaledVector(_normal, this.cfg.accel * 0.6 * dt * (1 + here / 2.5));
+        }
+      }
+
       this.velocity.addScaledVector(_desired, this.cfg.accel * dt);
     }
     this.velocity.multiplyScalar(Math.max(0, 1 - this.cfg.damping * dt));

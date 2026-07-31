@@ -414,6 +414,9 @@ export class Automap {
     this.miniCamera.position.copy(_miniCamPos);
     this.miniCamera.lookAt(shipPos);
 
+    this.shipMesh.position.copy(shipPos);
+    this.shipMesh.quaternion.copy(shipQuat);
+
     const pulse = 4.5 + Math.sin(now * 0.006) * 1.4;
     this.shipHalo.position.copy(shipPos);
     this.shipHalo.scale.setScalar(pulse);
@@ -426,11 +429,13 @@ export class Automap {
     const cssX = _size.x - 300;
     const cssYFromBottom = 130;
 
-    const dpr = renderer.getPixelRatio();
-    const vx = Math.round(cssX * dpr);
-    const vy = Math.round(cssYFromBottom * dpr);
-    const vw = Math.round(cssW * dpr);
-    const vh = Math.round(cssH * dpr);
+    // NOTE: three's setViewport/setScissor take CSS pixels and apply the pixel
+    // ratio INTERNALLY; pre-multiplying by dpr here double-scaled the inset off
+    // screen at any browser zoom above 100 percent (empty border bug)
+    const vx = Math.round(cssX);
+    const vy = Math.round(cssYFromBottom);
+    const vw = cssW;
+    const vh = cssH;
 
     if (this.miniCamera.aspect !== cssW / cssH) {
       this.miniCamera.aspect = cssW / cssH;
