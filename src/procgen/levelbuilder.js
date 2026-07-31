@@ -121,22 +121,28 @@ export function buildLevel(seed, config, onProgress) {
             colors[ci + 2] = clamp01((rockDeep.b + (rockShallow.b - rockDeep.b) * t) * (1 + jitter));
           }
 
-          // world-space box projection: uv from the two axes perpendicular to the
-          // dominant normal axis. Seams between projection axes vanish in the noise.
+          // world-space box projection, ONE axis per TRIANGLE (geometric face normal).
+          // Per-vertex axis selection interpolated across triangles whose smooth
+          // normals straddled an axis flip, smearing the texture into long streaky
+          // bands on domes; a per-face choice keeps every texel square.
           const uvs = new Float32Array(vertexCount * 2);
-          for (let v = 0; v < vertexCount; v++) {
-            const px = result.positions[v * 3];
-            const py = result.positions[v * 3 + 1];
-            const pz = result.positions[v * 3 + 2];
-            const nx = Math.abs(result.normals[v * 3]);
-            const ny = Math.abs(result.normals[v * 3 + 1]);
-            const nz = Math.abs(result.normals[v * 3 + 2]);
-            let u, w;
-            if (nx >= ny && nx >= nz) { u = py; w = pz; }
-            else if (ny >= nz) { u = px; w = pz; }
-            else { u = px; w = py; }
-            uvs[v * 2] = u * UV_SCALE;
-            uvs[v * 2 + 1] = w * UV_SCALE;
+          const P = result.positions;
+          for (let v = 0; v < vertexCount; v += 3) {
+            const i0 = v * 3, i1 = (v + 1) * 3, i2 = (v + 2) * 3;
+            const e1x = P[i1] - P[i0], e1y = P[i1 + 1] - P[i0 + 1], e1z = P[i1 + 2] - P[i0 + 2];
+            const e2x = P[i2] - P[i0], e2y = P[i2 + 1] - P[i0 + 1], e2z = P[i2 + 2] - P[i0 + 2];
+            const fnx = Math.abs(e1y * e2z - e1z * e2y);
+            const fny = Math.abs(e1z * e2x - e1x * e2z);
+            const fnz = Math.abs(e1x * e2y - e1y * e2x);
+            let ua, wa; // component offsets for the two projected axes
+            if (fnx >= fny && fnx >= fnz) { ua = 1; wa = 2; }
+            else if (fny >= fnz) { ua = 0; wa = 2; }
+            else { ua = 0; wa = 1; }
+            for (let k = 0; k < 3; k++) {
+              const vi = (v + k) * 3;
+              uvs[(v + k) * 2] = P[vi + ua] * UV_SCALE;
+              uvs[(v + k) * 2 + 1] = P[vi + wa] * UV_SCALE;
+            }
           }
 
           const geo = new THREE.BufferGeometry();

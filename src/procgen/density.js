@@ -159,14 +159,24 @@ export function createDensityField(graph, seed, config) {
       if (d > maxExtent) maxExtent = d;
     }
 
-    const bound = maxExtent + radius + BASE;
+    // mouth flare: tunnels bell open near both rooms (radius * mouthFlare at the ends,
+    // tapering to the base radius over mouthFlareSpan of the spline), so openings read
+    // as openings instead of pinholes
+    const flareMul = config.world.mouthFlare ?? 1.5;
+    const flareSpan = config.world.mouthFlareSpan ?? 0.25;
+    const maxR = radius * flareMul;
+
+    const bound = maxExtent + maxR + BASE;
     const segments = [];
     for (let i = 0; i < pts.length - 1; i++) {
       const p0 = pts[i], p1 = pts[i + 1];
-      segments.push({ ax: p0.x, ay: p0.y, az: p0.z, bx: p1.x, by: p1.y, bz: p1.z });
+      const tMid = (i + 0.5) / (pts.length - 1);
+      const endT = Math.min(tMid, 1 - tMid);
+      const flare = 1 + (flareMul - 1) * (1 - smoothstep(0, flareSpan, endT));
+      segments.push({ ax: p0.x, ay: p0.y, az: p0.z, bx: p1.x, by: p1.y, bz: p1.z, r: radius * flare });
     }
 
-    edgePolylines.push({ cx, cy, cz, boundSq: bound * bound, radius, segments, built });
+    edgePolylines.push({ cx, cy, cz, boundSq: bound * bound, radius, maxR, segments, built });
     decorEdges.push({ a: edge.a, b: edge.b, style: edge.style || 'cave', radius, locked: !!edge.locked, polyline: pts });
   }
 
@@ -220,7 +230,7 @@ export function createDensityField(graph, seed, config) {
       for (let j = 0; j < segs.length; j++) {
         const seg = segs[j];
         const dist = capsuleDist(x, y, z, seg.ax, seg.ay, seg.az, seg.bx, seg.by, seg.bz);
-        const sd = dist - e.radius;
+        const sd = dist - seg.r; // per-segment radius carries the mouth flare
         if (sd < d) d = sd;
         if (eBuilt && sd < builtMin) builtMin = sd;
       }
@@ -285,8 +295,8 @@ export function createDensityField(graph, seed, config) {
   for (const e of edgePolylines) {
     for (const seg of e.segments) {
       for (const p of [[seg.ax, seg.ay, seg.az], [seg.bx, seg.by, seg.bz]]) {
-        min.x = Math.min(min.x, p[0] - e.radius); min.y = Math.min(min.y, p[1] - e.radius); min.z = Math.min(min.z, p[2] - e.radius);
-        max.x = Math.max(max.x, p[0] + e.radius); max.y = Math.max(max.y, p[1] + e.radius); max.z = Math.max(max.z, p[2] + e.radius);
+        min.x = Math.min(min.x, p[0] - e.maxR); min.y = Math.min(min.y, p[1] - e.maxR); min.z = Math.min(min.z, p[2] - e.maxR);
+        max.x = Math.max(max.x, p[0] + e.maxR); max.y = Math.max(max.y, p[1] + e.maxR); max.z = Math.max(max.z, p[2] + e.maxR);
       }
     }
   }

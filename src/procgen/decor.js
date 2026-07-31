@@ -217,8 +217,6 @@ export function buildDecor(field, graph, config) {
   const panelMatrices = [];
   const fixtureMatrices = [];
   const glowMatrices = [];
-  const trimMatrices = [];
-  const floorDrop = built.floorDrop ?? 0.45;
   const panelCount = built.panelCount ?? [4, 8];
 
   const builtRooms = field.decor.rooms.filter((r) => r.style === 'built');
@@ -234,13 +232,17 @@ export function buildDecor(field, graph, config) {
   for (const room of builtRooms) {
     const r = room.radius;
 
-    // wall panels: pushed into the wall band, facing the room center
+    // wall panels: raycast to the ACTUAL carved wall (adjacent carves and the flat
+    // floor mean the surface is rarely at the ideal sphere radius; planting at r*0.94
+    // left panels floating mid-air), recess slightly, face the room center
     const n = randInt(rng, panelCount[0], panelCount[1]);
     for (let i = 0; i < n; i++) {
       const az = randRange(rng, 0, Math.PI * 2);
-      const el = randRange(rng, -0.15, 0.6);
+      const el = randRange(rng, -0.1, 0.6);
       _segDir.set(Math.cos(az) * Math.cos(el), Math.sin(el), Math.sin(az) * Math.cos(el));
-      _pt.copy(room.pos).addScaledVector(_segDir, r * 0.94);
+      const hit = field.raycast(room.pos, _segDir, r * 2.2, 0.4);
+      if (hit < 2) continue; // no wall found or wall right on top of center: skip
+      _pt.copy(room.pos).addScaledVector(_segDir, hit - 0.15);
       _quat.setFromUnitVectors(_Z, _segDir.negate());
       const w = 2.4 + r * 0.14;
       composeInto(panelMatrices, _pt, _quat, w, w * 0.66, 0.4);
@@ -253,12 +255,8 @@ export function buildDecor(field, graph, config) {
     _pt.y -= 0.34;
     composeInto(glowMatrices, _pt, _quat, 2.0, 0.18, 2.0);
 
-    // floor trim ring where the flat floor meets the sphere wall
-    const drop = r * floorDrop;
-    const ringR = Math.sqrt(Math.max(1, r * r - drop * drop)) * 0.94;
-    _pt.set(room.pos.x, room.pos.y - drop + 0.18, room.pos.z);
-    _quat.setFromUnitVectors(_Z, _Y);
-    composeInto(trimMatrices, _pt, _quat, ringR, ringR, ringR);
+    // (floor trim rings removed: non-uniform torus scaling fattened the tube into
+    // giant floating hoops; Trent flagged them as nonsense endcaps)
 
     // one small real light per built room, budget-capped
     if (lightCount < maxLights) {
@@ -279,9 +277,5 @@ export function buildDecor(field, graph, config) {
     group.add(makeInstanced(new THREE.BoxGeometry(1, 1, 1), mats.fixture, fixtureMatrices, 'decor-fixtures'));
     group.add(makeInstanced(new THREE.BoxGeometry(1, 1, 1), mats.glow, glowMatrices, 'decor-fixture-glow'));
   }
-  if (trimMatrices.length > 0) {
-    group.add(makeInstanced(new THREE.TorusGeometry(1, 0.05, 4, 16), mats.trim, trimMatrices, 'decor-floortrim'));
-  }
-
   return group;
 }

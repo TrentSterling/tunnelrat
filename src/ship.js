@@ -59,6 +59,7 @@ export class Ship {
     this.field = field;
     this.object3d = new THREE.Object3D();
     this.velocity = new THREE.Vector3();
+    this.rollVel = 0; // rad/s, integrated with accel + damping in update()
     this.shields = config.ship.shields;
     this.energy = config.ship.energy;
     this.alive = true;
@@ -69,6 +70,7 @@ export class Ship {
     this.object3d.position.copy(pos);
     this.object3d.quaternion.copy(quat);
     this.velocity.set(0, 0, 0);
+    this.rollVel = 0;
     this.shields = this.config.ship.shields;
     this.energy = this.config.ship.energy;
     this.alive = true;
@@ -113,8 +115,15 @@ export class Ship {
     q.multiply(_qYaw);
     _qPitch.setFromAxisAngle(AXIS_X, -input.mouseDY * cfg.lookSpeed);
     q.multiply(_qPitch);
-    if (input.axis.roll !== 0) {
-      _qRoll.setFromAxisAngle(AXIS_Z, -input.axis.roll * cfg.rollSpeed * dt);
+    // roll is a velocity, not a snap: accelerates toward the held direction and
+    // bleeds off when released (newtonian angular feel, matches the linear drift)
+    this.rollVel += -input.axis.roll * cfg.rollAccel * dt;
+    this.rollVel *= Math.max(0, 1 - cfg.rollDamping * dt);
+    const rollCap = cfg.rollSpeed;
+    if (this.rollVel > rollCap) this.rollVel = rollCap;
+    else if (this.rollVel < -rollCap) this.rollVel = -rollCap;
+    if (Math.abs(this.rollVel) > 1e-4) {
+      _qRoll.setFromAxisAngle(AXIS_Z, this.rollVel * dt);
       q.multiply(_qRoll);
     }
     q.normalize();

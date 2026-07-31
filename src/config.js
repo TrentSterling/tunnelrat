@@ -7,7 +7,9 @@ export const CONFIG = {
     roomCount: 14,        // graph nodes
     roomMinDist: 34,      // min spacing between room centers
     roomRadius: [8, 18],  // carve radius range for rooms (spawn/reactor forced large)
-    tunnelRadius: [3.2, 5.0],
+    tunnelRadius: [4.2, 6.2], // roomier: most tunnels were reading too tight in play
+    mouthFlare: 1.5,          // tunnel radius multiplier at room mouths, tapering over
+    mouthFlareSpan: 0.25,     // ...the first/last 25% of the spline
     extraLoopEdges: 3,    // edges added back after MST for flank routes
     noiseAmp: 2.6,        // wall displacement amplitude (m) applied to carve surface
     noiseFreq: 0.09,      // primary 3d noise frequency
@@ -18,7 +20,7 @@ export const CONFIG = {
   built: {                // constructed (industrial) sections vs organic cave
     roomFraction: 0.25,   // share of non-reactor/exit rooms that get style 'built'
     edgeFraction: 0.35,   // target share of edges with style 'built'
-    tunnelRadius: 4.4,    // ONE constant carve radius for every built corridor
+    tunnelRadius: 5.2,    // ONE constant carve radius for every built corridor
     jitterScale: 0.25,    // spline jitter multiplier for built edges (locked edge = 0, dead straight)
     floorDrop: 0.45,      // built room floor plane at center.y - radius*floorDrop
     ribSpacing: 4,        // meters between corridor rib rings
@@ -34,7 +36,9 @@ export const CONFIG = {
     damping: 1.6,         // velocity damping per second (descent-style drift)
     maxSpeed: 34,
     lookSpeed: 0.0022,    // rad per px mouse
-    rollSpeed: 2.4,       // rad/s on Q/E
+    rollSpeed: 2.6,       // rad/s cap on Q/E
+    rollAccel: 7.5,       // rad/s^2 while held (roll winds up, newtonian feel)
+    rollDamping: 4.5,     // roll velocity bleed per second when released
     radius: 1.4,          // collision sphere
     bounce: 0.25,         // velocity reflect factor on hard impact
     shields: 100,

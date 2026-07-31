@@ -31,8 +31,8 @@ app.appendChild(renderer.domElement);
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(CONFIG.colors.fog);
 scene.fog = new THREE.FogExp2(CONFIG.colors.fog, CONFIG.colors.fogDensity);
-scene.add(new THREE.AmbientLight(0x404060, 0.35));
-scene.add(new THREE.HemisphereLight(0x3a4a66, 0x33241a, 0.5)); // subtle shape fill so walls read as 3d
+scene.add(new THREE.AmbientLight(0x404060, 0.5));
+scene.add(new THREE.HemisphereLight(0x3a4a66, 0x33241a, 0.55)); // subtle shape fill so walls read as 3d
 
 const camera = new THREE.PerspectiveCamera(78, innerWidth / innerHeight, 0.1, 400);
 const camRig = new THREE.Group(); // shake offsets go here, camera stays at rig origin
@@ -232,6 +232,10 @@ function loadLevel(newSeed, newDepth) {
     if (!ship) {
       ship = new Ship(CONFIG, level.field);
       ship.object3d.add(camRig);
+      // soft omni fill around the hull: the headlamp cone alone left everything
+      // outside the beam pitch black
+      const fill = new THREE.PointLight(0xffe4c0, 34, 26, 1.7);
+      ship.object3d.add(fill);
       scene.add(ship.object3d);
     } else {
       ship.field = level.field;

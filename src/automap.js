@@ -76,9 +76,22 @@ export class Automap {
     this.dimPlane.position.set(0, 0, -500);
     this.camera.add(this.dimPlane);
 
-    this.shipMesh = new THREE.Mesh(shipGeo, new THREE.MeshBasicMaterial({ color: COLOR.ship }));
-    this.shipMesh.scale.setScalar(2.2); // must pop against the hologram shell
+    // player beacon: bright additive cone + pulsing halo ring, unmissable by design
+    this.shipMesh = new THREE.Mesh(shipGeo, new THREE.MeshBasicMaterial({
+      color: 0xffffff, blending: THREE.AdditiveBlending, depthTest: false, transparent: true,
+    }));
+    this.shipMesh.scale.setScalar(3.2);
+    this.shipMesh.renderOrder = 10;
     this.scene.add(this.shipMesh);
+    this.shipHalo = new THREE.Mesh(
+      new THREE.TorusGeometry(1, 0.09, 6, 24),
+      new THREE.MeshBasicMaterial({
+        color: 0x5cff8a, blending: THREE.AdditiveBlending, depthTest: false,
+        transparent: true, opacity: 0.9,
+      })
+    );
+    this.shipHalo.renderOrder = 10;
+    this.scene.add(this.shipHalo);
 
     this.nodeMeshes = new Map();
     this.edgeLines = [];
@@ -266,13 +279,21 @@ export class Automap {
       this.camera.updateProjectionMatrix();
     }
 
-    const t = performance.now() * 0.00015; // slow deterministic auto-rotate, not rng
+    const now = performance.now();
+    const t = now * 0.00015; // slow smooth auto-rotate (kept), but FOCUSED ON THE PLAYER
+    const focusRadius = Math.min(this.orbitRadius, 85); // close enough that you always spot yourself
     this.camera.position.set(
-      this.centroid.x + Math.cos(t) * this.orbitRadius,
-      this.centroid.y + this.orbitRadius * 0.4,
-      this.centroid.z + Math.sin(t) * this.orbitRadius
+      shipPos.x + Math.cos(t) * focusRadius,
+      shipPos.y + focusRadius * 0.45,
+      shipPos.z + Math.sin(t) * focusRadius
     );
-    this.camera.lookAt(this.centroid);
+    this.camera.lookAt(shipPos);
+
+    // pulsing halo ring billboarded to the map camera: the "YOU ARE HERE"
+    const pulse = 4.5 + Math.sin(now * 0.006) * 1.4;
+    this.shipHalo.position.copy(shipPos);
+    this.shipHalo.scale.setScalar(pulse);
+    this.shipHalo.quaternion.copy(this.camera.quaternion);
 
     const prevAutoClear = renderer.autoClear;
     renderer.autoClear = false;
