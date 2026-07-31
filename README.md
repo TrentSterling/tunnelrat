@@ -2,6 +2,8 @@
 
 Procgen 6DOF mine crawler, Descent-style. Three.js prototype.
 
+**Play it: [tront.xyz/tunnelrat](https://tront.xyz/tunnelrat/)**
+
 Graph-planned missions carved into marching-cubes caves; the density field is the
 level, the collision, and the enemy line-of-sight all at once. Find the keycard,
 open the door, kill the reactor, fly out before it blows, descend deeper.
