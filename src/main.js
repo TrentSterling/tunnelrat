@@ -19,6 +19,7 @@ const loadStatusEl = document.getElementById('loadStatus');
 
 // ---------- renderer / scene ----------
 const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.toneMapping = THREE.ACESFilmicToneMapping; // tames headlamp blowout on near walls
 renderer.setSize(innerWidth, innerHeight);
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 app.appendChild(renderer.domElement);
@@ -105,6 +106,7 @@ function loadLevel(newSeed, newDepth) {
 
     if (!automap) automap = new Automap(level.graph);
     else automap.rebuild(level.graph);
+    automap.setCaveMesh(level.caveGroup);
     automap.visit(level.graph.spawnId);
 
     ship.onImpact = (speed) => { sfx.play('hitWall'); shake = Math.min(1, shake + speed * 0.03); };
@@ -132,7 +134,7 @@ function onReactorDestroyed() {
 // ---------- gameplay event routing ----------
 function handleEvents(events) {
   for (const ev of events) {
-    if (ev === 'keyPickup') { sfx.play('pickup'); hud.setKey(true); hud.message('KEYCARD ACQUIRED'); hud.setObjective('UNLOCK THE SECURITY DOOR'); }
+    if (ev === 'keyPickup') { sfx.play('pickup'); hud.setKey(true); hud.message('KEYCARD ACQUIRED'); hud.setObjective('UNLOCK THE SECURITY DOOR'); automap.setKeyTaken(); }
     else if (ev === 'doorBlocked') { sfx.play('thrum'); hud.message('LOCKED: KEYCARD REQUIRED', 1200); }
     else if (ev === 'doorOpen') { sfx.play('unlock'); hud.message('SECURITY DOOR OPEN'); hud.setObjective('DESTROY THE REACTOR'); automap.setDoorOpen(true); }
     else if (ev === 'escapeStart') { hud.message('REACTOR CRITICAL: GET OUT', 3200); hud.setObjective('REACH THE EXIT BEACON'); }
@@ -207,7 +209,7 @@ function frame() {
   camRig.position.set((Math.random() - 0.5) * shake * 0.4, (Math.random() - 0.5) * shake * 0.4, 0);
 
   renderer.render(scene, camera);
-  if (automap.visible) automap.render(renderer, ship.object3d.position, ship.object3d.quaternion);
+  if (automap.visible) automap.render(renderer, ship.object3d.position, ship.object3d.quaternion, enemies.list());
   input.endFrame();
 }
 
@@ -230,6 +232,7 @@ window.TR = {
       ship.object3d.position.copy(n.pos); ship.velocity.set(0, 0, 0);
     },
     god() { ship.takeDamage = () => false; ship.spendEnergy = () => true; },
+    toggleMap() { automap.toggle(); },
   },
 };
 

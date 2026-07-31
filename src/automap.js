@@ -8,8 +8,10 @@
 //   toggle()
 //   visit(nodeId)              // mark node discovered; nodes start hidden except spawn.
 //                              // An edge shows when EITHER end is visited.
-//   rebuild(graph)             // new level
-//   render(renderer, shipPos, shipQuat)  // call AFTER main scene render when visible:
+//   rebuild(graph)             // new level (then call setCaveMesh with the new group)
+//   setCaveMesh(caveGroup)     // full cave mesh rendered as a scanner hologram
+//   setKeyTaken()              // hide the key POI marker after pickup
+//   render(renderer, shipPos, shipQuat, enemies)  // call AFTER main scene render when visible:
 //     renderer.autoClear=false, clear depth only, render map scene fullscreen with its
 //     own camera orbiting the graph centroid (slow auto-rotate), then restore state.
 // }
@@ -41,7 +43,20 @@ const COLOR = {
   door: CONFIG.colors.door,
   doorOpen: CONFIG.colors.doorOpen,
   ship: 0xffffff,
+  enemy: 0xff4a4a,
 };
+
+// hologram materials, shared across all cave chunks (rebuilds swap geometry only)
+const holoFillMat = new THREE.MeshBasicMaterial({
+  color: 0x1a7a9e, transparent: true, opacity: 0.07,
+  blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+});
+const holoWireMat = new THREE.MeshBasicMaterial({
+  color: 0x39d0ff, wireframe: true, transparent: true, opacity: 0.05,
+  blending: THREE.AdditiveBlending, depthWrite: false,
+});
+const enemyGeo = new THREE.OctahedronGeometry(1.6, 0);
+const poiRingGeo = new THREE.TorusGeometry(5, 0.5, 6, 24);
 
 export class Automap {
   constructor(graph) {
@@ -62,6 +77,7 @@ export class Automap {
     this.camera.add(this.dimPlane);
 
     this.shipMesh = new THREE.Mesh(shipGeo, new THREE.MeshBasicMaterial({ color: COLOR.ship }));
+    this.shipMesh.scale.setScalar(2.2); // must pop against the hologram shell
     this.scene.add(this.shipMesh);
 
     this.nodeMeshes = new Map();
@@ -71,7 +87,38 @@ export class Automap {
     this.centroid = new THREE.Vector3();
     this.orbitRadius = 100;
 
+    // hologram cave shell + entity/POI markers
+    this.holoGroup = new THREE.Group();
+    this.scene.add(this.holoGroup);
+    this.enemyMarkers = []; // pooled octahedra, grown on demand
+    this.poi = {};          // key / door / exit / reactor marker meshes
+
     this._build(graph);
+  }
+
+  // Full cave mesh as a scanner hologram: reuses the live chunk geometries (no copies).
+  // Call after every rebuild(); main.js owns geometry disposal on level change.
+  setCaveMesh(caveGroup) {
+    this.holoGroup.clear();
+    caveGroup.traverse((o) => {
+      if (!o.isMesh) return;
+      const fill = new THREE.Mesh(o.geometry, holoFillMat);
+      const wire = new THREE.Mesh(o.geometry, holoWireMat);
+      this.holoGroup.add(fill, wire);
+    });
+  }
+
+  _makePoi(kind, pos, geo, scale) {
+    const mat = new THREE.MeshBasicMaterial({
+      color: COLOR[kind], transparent: true, opacity: 0.9,
+      blending: THREE.AdditiveBlending, depthWrite: false,
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.scale.setScalar(scale);
+    mesh.position.copy(pos);
+    this.scene.add(mesh);
+    this.poi[kind] = mesh;
+    return mesh;
   }
 
   _build(graph) {
@@ -89,11 +136,16 @@ export class Automap {
     this.lockedLine = null;
     this.visited.clear();
 
+    this.holoGroup.clear(); // stale level shell; setCaveMesh() brings the new one
+    for (const m of Object.values(this.poi)) { this.scene.remove(m); m.material.dispose(); }
+    this.poi = {};
+    for (const m of this.enemyMarkers) m.visible = false;
+
     const box = new THREE.Box3();
     for (const n of graph.nodes) box.expandByPoint(n.pos);
     box.getCenter(this.centroid);
     const size = box.getSize(new THREE.Vector3());
-    this.orbitRadius = Math.max(size.x, size.y, size.z) * 0.85 + 26;
+    this.orbitRadius = Math.max(size.x, size.y, size.z) * 1.2 + 30; // fit the full hologram shell, not just graph nodes
     this.camera.far = this.orbitRadius * 6 + 200;
     this.camera.updateProjectionMatrix();
 
@@ -125,7 +177,21 @@ export class Automap {
       if (e.locked) this.lockedLine = line;
     }
 
+    // POI markers: always visible on the hologram (the scanner sees the whole mine)
+    const byIdPoi = new Map(graph.nodes.map((n) => [n.id, n]));
+    this._makePoi('key', byIdPoi.get(graph.keyId).pos, nodeGeo, 3.2);
+    this._makePoi('reactor', byIdPoi.get(graph.reactorId).pos, nodeGeo, 4.5);
+    this._makePoi('exit', byIdPoi.get(graph.exitId).pos, shipGeo, 2.6);
+    const da = byIdPoi.get(graph.lockedEdge.a).pos;
+    const db = byIdPoi.get(graph.lockedEdge.b).pos;
+    const doorMesh = this._makePoi('door', da.clone().lerp(db, 0.5), poiRingGeo, 1);
+    doorMesh.lookAt(db); // ring plane faces along the locked tunnel
+
     this.visit(graph.spawnId);
+  }
+
+  setKeyTaken() {
+    if (this.poi.key) this.poi.key.visible = false;
   }
 
   rebuild(graph) {
@@ -149,15 +215,49 @@ export class Automap {
   }
 
   setDoorOpen(open) {
-    if (!this.lockedLine) return;
-    this.lockedLine.material.color.set(open ? COLOR.doorOpen : COLOR.door);
+    if (this.lockedLine) this.lockedLine.material.color.set(open ? COLOR.doorOpen : COLOR.door);
+    if (this.poi.door) this.poi.door.material.color.set(open ? COLOR.doorOpen : COLOR.door);
   }
 
-  render(renderer, shipPos, shipQuat) {
+  // enemies: live list from EnemyManager.list(); markers pooled and repositioned
+  _updateEnemyMarkers(enemies, time) {
+    let i = 0;
+    if (enemies) {
+      for (const e of enemies) {
+        if (!e.alive) continue;
+        if (i >= this.enemyMarkers.length) {
+          const m = new THREE.Mesh(enemyGeo, new THREE.MeshBasicMaterial({
+            color: COLOR.enemy, transparent: true, opacity: 0.95,
+            blending: THREE.AdditiveBlending, depthWrite: false,
+          }));
+          this.scene.add(m);
+          this.enemyMarkers.push(m);
+        }
+        const m = this.enemyMarkers[i++];
+        m.position.copy(e.pos);
+        m.visible = true;
+        if (e.isReactor) {
+          m.material.color.set(COLOR.reactor);
+          m.scale.setScalar(2.2 + Math.sin(time * 6) * 0.3);
+        } else {
+          m.material.color.set(COLOR.enemy);
+          m.scale.setScalar(1);
+        }
+      }
+    }
+    for (; i < this.enemyMarkers.length; i++) this.enemyMarkers[i].visible = false;
+  }
+
+  render(renderer, shipPos, shipQuat, enemies) {
     if (!this.visible) return;
 
     this.shipMesh.position.copy(shipPos);
     this.shipMesh.quaternion.copy(shipQuat);
+
+    const time = performance.now() * 0.001;
+    this._updateEnemyMarkers(enemies, time);
+    if (this.poi.key) this.poi.key.rotation.y = time * 1.5;
+    if (this.poi.reactor) this.poi.reactor.rotation.y = time;
 
     renderer.getSize(_size);
     const aspect = _size.x / Math.max(1, _size.y);
