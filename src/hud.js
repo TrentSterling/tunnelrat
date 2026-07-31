@@ -67,7 +67,7 @@ const CSS = `
   box-shadow:inset 0 0 140px 44px rgba(255,59,59,.85); }
 
 #hud .hud-overlay { position:absolute; inset:0; display:none; flex-direction:column;
-  align-items:center; justify-content:center; background:rgba(5,7,10,.82); }
+  align-items:center; justify-content:center; background:rgba(5,7,10,.5); }
 #hud .hud-overlay h2 { font-size:46px; letter-spacing:9px; color:var(--danger);
   text-shadow:0 0 30px rgba(255,59,59,.6); }
 #hud .hud-overlay.win h2 { color:var(--accent); text-shadow:0 0 30px rgba(92,255,138,.6); }

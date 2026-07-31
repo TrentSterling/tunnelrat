@@ -17,6 +17,11 @@
 //     marches from origin; returns distance at first sample >= 0, or -1 if clear.
 //     Used for enemy line-of-sight and hitscan checks.
 //   bounds: { min:THREE.Vector3, max:THREE.Vector3 },   // world box that contains all carving + margin
+//   decor: {                                            // for procgen/decor.js; no spline recompute
+//     edges: [{ a, b, style, radius, locked, polyline: THREE.Vector3[] }],
+//     rooms: [{ id, pos:THREE.Vector3, radius, style, kind }],
+//     seed,                                             // level seed (decor derives its own rng)
+//   },
 // }
 //
 // Field construction:
@@ -30,6 +35,15 @@
 //   with noiseAmp faded to 0 within 6m of every node.pos of kind 'spawn'|'exit'
 //   (keep gameplay-critical rooms clean) . Precompute edge polylines ONCE in
 //   createDensityField; sample() must not allocate (reuse scratch vectors).
+//
+// BUILT SECTIONS (style 'built' on graph nodes/edges, see graph.js):
+//   - built edges carve with ONE constant radius (config.built.tunnelRadius) and
+//     reduced spline jitter (config.built.jitterScale; the locked edge is dead
+//     straight so the door disc + hazard frame sit inside the corridor).
+//   - fbm noise fades to ~0 near every built carve surface (tracked as the min
+//     signed distance over built carvers during the same sample loop: free).
+//   - built rooms get a flat floor: rock is unioned back below
+//     pos.y - radius*config.built.floorDrop, clipped to the room sphere.
 //
 // PERF: sample() is called ~1-4 million times during meshing; keep the inner loop
 // tight, use squared-distance early-outs against each edge's bounding sphere.
@@ -71,12 +85,22 @@ export function createDensityField(graph, seed, config) {
   const spheres = graph.nodes.map((n) => {
     const r = n.radius;
     const bound = r + BASE;
-    return { cx: n.pos.x, cy: n.pos.y, cz: n.pos.z, r, boundSq: bound * bound };
+    return { cx: n.pos.x, cy: n.pos.y, cz: n.pos.z, r, boundSq: bound * bound, built: n.style === 'built' };
   });
+
+  // built room flat floors: rock unioned back below floorY, clipped to the room sphere
+  const floors = graph.nodes
+    .filter((n) => n.style === 'built')
+    .map((n) => {
+      const floorY = n.pos.y - n.radius * (config.built?.floorDrop ?? 0.45);
+      const bound = n.radius + 4;
+      return { cx: n.pos.x, cy: n.pos.y, cz: n.pos.z, r: n.radius, floorY, boundSq: bound * bound };
+    });
 
   // ---------- edge polylines ----------
   // each: { cx,cy,cz (centroid), boundSq, radius, segments:[{ax,ay,az,bx,by,bz}] }
   const edgePolylines = [];
+  const decorEdges = [];
   const arbY = new THREE.Vector3(0, 1, 0);
   const arbX = new THREE.Vector3(1, 0, 0);
 
@@ -84,6 +108,8 @@ export function createDensityField(graph, seed, config) {
     const a = nodeById.get(edge.a);
     const b = nodeById.get(edge.b);
     if (!a || !b) continue;
+
+    const built = edge.style === 'built';
 
     const dir = new THREE.Vector3().subVectors(b.pos, a.pos);
     const edgeLen = dir.length();
@@ -94,7 +120,11 @@ export function createDensityField(graph, seed, config) {
     if (perp1.lengthSq() < 1e-9) perp1.set(1, 0, 0); else perp1.normalize();
     const perp2 = new THREE.Vector3().crossVectors(dir, perp1).normalize();
 
-    const jitterMag = edgeLen * 0.22;
+    // built corridors run near-straight; the locked (door) edge is dead straight so
+    // the blocking disc at the straight-line midpoint sits inside the carve.
+    let jitterMag = edgeLen * 0.22;
+    if (edge.locked) jitterMag = 0;
+    else if (built) jitterMag *= config.built?.jitterScale ?? 0.25;
 
     function jitteredWaypoint(t) {
       const p = new THREE.Vector3().lerpVectors(a.pos, b.pos, t);
@@ -112,7 +142,10 @@ export function createDensityField(graph, seed, config) {
     const segCount = 14;
     const pts = curve.getPoints(segCount); // segCount+1 points
 
-    const radius = randRange(rng, tunnelRadius[0], tunnelRadius[1]);
+    // keep the rng call unconditional so cave edges keep their shapes regardless of
+    // how many edges happen to be built for a given seed
+    const natRadius = randRange(rng, tunnelRadius[0], tunnelRadius[1]);
+    const radius = built ? (config.built?.tunnelRadius ?? 4.4) : natRadius;
 
     // centroid + max extent for a single bounding sphere over the whole polyline
     let cx = 0, cy = 0, cz = 0;
@@ -133,7 +166,8 @@ export function createDensityField(graph, seed, config) {
       segments.push({ ax: p0.x, ay: p0.y, az: p0.z, bx: p1.x, by: p1.y, bz: p1.z });
     }
 
-    edgePolylines.push({ cx, cy, cz, boundSq: bound * bound, radius, segments });
+    edgePolylines.push({ cx, cy, cz, boundSq: bound * bound, radius, segments, built });
+    decorEdges.push({ a: edge.a, b: edge.b, style: edge.style || 'cave', radius, locked: !!edge.locked, polyline: pts });
   }
 
   // ---------- noise fade anchors (spawn/exit rooms stay clean) ----------
@@ -156,8 +190,14 @@ export function createDensityField(graph, seed, config) {
     return fade;
   }
 
+  // Noise suppression band around built carve surfaces: zero within BUILT_FADE_IN
+  // meters of the surface (and everywhere inside), full noise beyond BUILT_FADE_OUT.
+  const BUILT_FADE_IN = 0.75;
+  const BUILT_FADE_OUT = 3.5;
+
   function sample(x, y, z) {
     let d = BASE;
+    let builtMin = BASE; // min signed distance over BUILT carvers only (free to track)
 
     for (let i = 0; i < spheres.length; i++) {
       const s = spheres[i];
@@ -167,6 +207,7 @@ export function createDensityField(graph, seed, config) {
       const dist = Math.sqrt(distSq);
       const sd = dist - s.r;
       if (sd < d) d = sd;
+      if (s.built && sd < builtMin) builtMin = sd;
     }
 
     for (let i = 0; i < edgePolylines.length; i++) {
@@ -175,17 +216,36 @@ export function createDensityField(graph, seed, config) {
       const distSq = dx * dx + dy * dy + dz * dz;
       if (distSq > e.boundSq) continue;
       const segs = e.segments;
+      const eBuilt = e.built;
       for (let j = 0; j < segs.length; j++) {
         const seg = segs[j];
         const dist = capsuleDist(x, y, z, seg.ax, seg.ay, seg.az, seg.bx, seg.by, seg.bz);
         const sd = dist - e.radius;
         if (sd < d) d = sd;
+        if (eBuilt && sd < builtMin) builtMin = sd;
       }
     }
 
-    const fade = noiseFadeAt(x, y, z);
+    let fade = noiseFadeAt(x, y, z);
+    if (builtMin < BUILT_FADE_OUT) {
+      const bf = smoothstep(BUILT_FADE_IN, BUILT_FADE_OUT, builtMin);
+      if (bf < fade) fade = bf;
+    }
     if (fade > 0) {
       d += fbm3(noise, x * noiseFreq, y * noiseFreq, z * noiseFreq) * noiseAmp * fade;
+    }
+
+    // built room flat floors: union rock back below floorY, clipped to the sphere.
+    // Applied after noise so the floor plane stays perfectly flat.
+    for (let i = 0; i < floors.length; i++) {
+      const f = floors[i];
+      if (y >= f.floorY + 4) continue;
+      const dx = x - f.cx, dy = y - f.cy, dz = z - f.cz;
+      const distSq = dx * dx + dy * dy + dz * dz;
+      if (distSq > f.boundSq) continue;
+      const dist = Math.sqrt(distSq);
+      const hs = Math.min(f.floorY - y, f.r + 2 - dist);
+      if (hs > d) d = hs;
     }
 
     return d;
@@ -234,10 +294,15 @@ export function createDensityField(graph, seed, config) {
   min.subScalar(margin);
   max.addScalar(margin);
 
+  const decorRooms = graph.nodes.map((n) => ({
+    id: n.id, pos: n.pos.clone(), radius: n.radius, style: n.style || 'cave', kind: n.kind,
+  }));
+
   return {
     sample,
     collisionNormal,
     raycast,
     bounds: { min, max },
+    decor: { edges: decorEdges, rooms: decorRooms, seed },
   };
 }

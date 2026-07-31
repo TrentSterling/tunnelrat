@@ -15,6 +15,19 @@ export const CONFIG = {
     chunk: 32,            // voxels per chunk axis
   },
 
+  built: {                // constructed (industrial) sections vs organic cave
+    roomFraction: 0.25,   // share of non-reactor/exit rooms that get style 'built'
+    edgeFraction: 0.35,   // target share of edges with style 'built'
+    tunnelRadius: 4.4,    // ONE constant carve radius for every built corridor
+    jitterScale: 0.25,    // spline jitter multiplier for built edges (locked edge = 0, dead straight)
+    floorDrop: 0.45,      // built room floor plane at center.y - radius*floorDrop
+    ribSpacing: 4,        // meters between corridor rib rings
+    ribTube: 0.42,        // rib ring tube thickness
+    stripSize: 0.3,       // light-strip box cross-section
+    panelCount: [4, 8],   // wall panels per built room
+    maxLights: 5,         // hard cap on new PointLights from decor (one per built room max)
+  },
+
   ship: {
     thrust: 42,           // m/s^2 linear accel
     boostMult: 1.7,       // holding boost key
@@ -63,5 +76,8 @@ export const CONFIG = {
     fog: 0x05070a, fogDensity: 0.016,
     headlamp: 0xfff4d6,
     key: 0xffd23b, door: 0xff3b3b, doorOpen: 0x5cff8a, exit: 0x39d0ff, reactor: 0xff7a2f,
+    // built-section decor (see procgen/decor.js)
+    stripAmber: 0xffb13b, stripCyan: 0x39d0ff, stripRed: 0xff3b3b,
+    ribMetal: 0x8a94a8, panelMetal: 0x5a6a80, trimMetal: 0x39424f, roomLight: 0xfff4d6,
   },
 };

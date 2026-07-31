@@ -5,9 +5,14 @@
 //
 // generateLevelGraph(seed:number, config:CONFIG) -> graph object:
 // {
-//   nodes: [{ id:number, pos:THREE.Vector3, radius:number, kind:string }],
+//   nodes: [{ id:number, pos:THREE.Vector3, radius:number, kind:string, style:string }],
 //     kind is one of 'spawn' | 'key' | 'reactor' | 'exit' | 'room'
-//   edges: [{ a:number, b:number, locked:boolean }],   // exactly ONE edge has locked=true (the door)
+//     style is 'cave' | 'built' : reactor + exit always 'built', plus
+//       ~config.built.roomFraction of the remaining rooms (seeded).
+//   edges: [{ a:number, b:number, locked:boolean, style:string }],
+//     exactly ONE edge has locked=true (the door). style 'built' when both ends are
+//     built, the locked edge is always 'built', plus random extras until
+//     ~config.built.edgeFraction of all edges are built.
 //   spawnId, keyId, reactorId, exitId : number,
 //   neighbors: Map<number, number[]>,  // adjacency incl. locked edges
 //   lockedEdge: { a, b },              // convenience ref to the door edge
@@ -228,6 +233,48 @@ function selectPreferred(candidates, distMap, neighbors, rng) {
   return pick(rng, tier2);
 }
 
+function shuffleInPlace(rng, arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    const t = arr[i]; arr[i] = arr[j]; arr[j] = t;
+  }
+  return arr;
+}
+
+// Style pass: reactor + exit rooms are always constructed; roughly
+// config.built.roomFraction of the other rooms too. Edges are built when both
+// endpoints are built; the locked security door edge is always built; random
+// extras are promoted until ~config.built.edgeFraction of edges are built.
+function assignStyles(nodes, edges, lockedEdgeObj, reactorId, exitId, rng, config) {
+  const roomFraction = config.built?.roomFraction ?? 0.25;
+  const edgeFraction = config.built?.edgeFraction ?? 0.35;
+
+  for (const n of nodes) n.style = 'cave';
+  for (const n of nodes) {
+    if (n.id === reactorId || n.id === exitId) n.style = 'built';
+  }
+  const candidates = shuffleInPlace(rng, nodes.filter((n) => n.style !== 'built'));
+  const extraRooms = Math.round(candidates.length * roomFraction);
+  for (let i = 0; i < extraRooms && i < candidates.length; i++) candidates[i].style = 'built';
+
+  const builtNode = new Set(nodes.filter((n) => n.style === 'built').map((n) => n.id));
+  for (const e of edges) {
+    e.style = builtNode.has(e.a) && builtNode.has(e.b) ? 'built' : 'cave';
+  }
+  if (lockedEdgeObj) lockedEdgeObj.style = 'built'; // security doors are constructed
+
+  const target = Math.round(edges.length * edgeFraction);
+  let builtCount = edges.filter((e) => e.style === 'built').length;
+  if (builtCount < target) {
+    const rest = shuffleInPlace(rng, edges.filter((e) => e.style !== 'built'));
+    for (const e of rest) {
+      if (builtCount >= target) break;
+      e.style = 'built';
+      builtCount++;
+    }
+  }
+}
+
 // ---------- public API ----------
 
 export function generateLevelGraph(seed, config) {
@@ -336,6 +383,9 @@ export function generateLevelGraph(seed, config) {
       keyId = newKeyNode.id;
     }
   }
+
+  // 5. construction styles: mines mix organic caves with built industrial sections.
+  assignStyles(nodes, edges, lockedEdgeObj, reactorId, exitId, rng, config);
 
   return {
     nodes,

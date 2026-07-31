@@ -77,6 +77,15 @@ const wreckSpin = new THREE.Vector3();
 let deathTimer = 0;
 let exploded = false;
 let flashT = -1;
+
+// death cam: pull back from the wreck, then orbit once it has blown
+const _deathCamStart = new THREE.Vector3();
+const _deathRetreatDir = new THREE.Vector3(); // fixed at death, wreck-to-camera, +Y raised
+const _deathOffsetDir = new THREE.Vector3();  // _deathRetreatDir rotated by the orbit angle
+const _deathCamCandidate = new THREE.Vector3();
+let deathCamStartRadius = 0;
+let deathCamRadius = 0;   // grows toward 14, frozen early if it would clip a wall
+let deathOrbitAngle = 0;  // advances only after the explosion
 const flashMesh = new THREE.Mesh(
   new THREE.SphereGeometry(1, 8, 6),
   new THREE.MeshBasicMaterial({ color: 0xffa030, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false })
@@ -84,12 +93,17 @@ const flashMesh = new THREE.Mesh(
 flashMesh.visible = false;
 scene.add(flashMesh);
 
-// third-person chase cam (Freespace-style): V toggles, ship model shows in third
+// third-person chase cam (Freespace-style): V toggles, ship model shows in third.
+// Damped follow (exponential smoothing) + a small velocity-lean so thrust drifts
+// the ship toward the screen edges instead of it staying pinned dead-center.
 let thirdPerson = false;
 let playerShipModel = null;
 const CHASE_OFFSET = new THREE.Vector3(0, 1.9, 6.2); // local to ship: up + behind
 const _chaseWorld = new THREE.Vector3();
 const _chaseLocal = new THREE.Vector3();
+const _chaseOffsetTarget = new THREE.Vector3();
+const _chaseLocalVel = new THREE.Vector3();
+const _chaseInvQuat = new THREE.Quaternion();
 
 function ensurePlayerShipModel() {
   if (playerShipModel) return;
@@ -99,6 +113,22 @@ function ensurePlayerShipModel() {
   ship.object3d.add(playerShipModel);
 }
 
+// flatten the ship's forward vector to a level horizontal yaw (zero pitch/roll),
+// keeping whichever way it was already facing. Debug-only: used by showcase() so
+// the robot lineup and camera don't inherit a steep spawn pitch.
+const _levelDir = new THREE.Vector3();
+const _levelOrigin = new THREE.Vector3();
+const _levelMat = new THREE.Matrix4();
+const _levelUp = new THREE.Vector3(0, 1, 0);
+function levelShipOrientation() {
+  ship.forward(_levelDir);
+  _levelDir.y = 0;
+  if (_levelDir.lengthSq() < 1e-6) _levelDir.set(0, 0, -1);
+  _levelDir.normalize();
+  _levelMat.lookAt(_levelOrigin, _levelDir, _levelUp);
+  ship.object3d.quaternion.setFromRotationMatrix(_levelMat);
+}
+
 function applyCameraMode() {
   ensurePlayerShipModel();
   playerShipModel.visible = thirdPerson;
@@ -106,7 +136,7 @@ function applyCameraMode() {
   camRig.position.copy(thirdPerson ? CHASE_OFFSET : _chaseLocal.set(0, 0, 0));
 }
 
-function updateChaseCam() {
+function updateChaseCam(dt) {
   // pull the camera in when the chase offset would sit inside rock
   let t = 1;
   for (const tryT of [1, 0.75, 0.5, 0.32]) {
@@ -115,7 +145,17 @@ function updateChaseCam() {
     _chaseWorld.copy(_chaseLocal).applyQuaternion(ship.object3d.quaternion).add(ship.object3d.position);
     if (level.field.sample(_chaseWorld.x, _chaseWorld.y, _chaseWorld.z) < -0.8) break;
   }
-  camRig.position.copy(CHASE_OFFSET).multiplyScalar(t);
+  _chaseOffsetTarget.copy(CHASE_OFFSET).multiplyScalar(t);
+
+  // velocity lean: world velocity -> ship-local space, shift the offset opposite it
+  // (clamped 0.6m) so the ship drifts toward the screen edges under thrust
+  _chaseInvQuat.copy(ship.object3d.quaternion).invert();
+  _chaseLocalVel.copy(ship.velocity).applyQuaternion(_chaseInvQuat).multiplyScalar(-1);
+  if (_chaseLocalVel.length() > 0.6) _chaseLocalVel.setLength(0.6);
+  _chaseOffsetTarget.add(_chaseLocalVel);
+
+  // damped follow: exponential smoothing, not an instant snap
+  camRig.position.lerp(_chaseOffsetTarget, 1 - Math.exp(-dt * 8));
 }
 
 function startDeathCinematic() {
@@ -124,7 +164,28 @@ function startDeathCinematic() {
   wreck.position.copy(ship.object3d.position);
   wreck.quaternion.copy(ship.object3d.quaternion);
   scene.add(wreck);
-  scene.attach(camRig); // freeze the camera in world space to watch the tumble
+  scene.attach(camRig); // detach into world space so it can retreat/orbit on its own
+
+  // retreat direction: wreck-to-camera at the moment of death, raised a bit, renormalized.
+  // FP mode has the camera sitting right on the wreck (zero-length), so fall back to
+  // "behind where the ship was facing", flattened to yaw only -- using the ship's full
+  // pitch here can point the fallback almost straight down/up and drive the retreat
+  // into the floor or ceiling.
+  _deathRetreatDir.copy(camRig.position).sub(wreck.position);
+  if (_deathRetreatDir.lengthSq() < 1e-4) {
+    ship.forward(_deathRetreatDir).multiplyScalar(-1);
+    _deathRetreatDir.y = 0;
+    if (_deathRetreatDir.lengthSq() < 1e-4) _deathRetreatDir.set(0, 0, 1); // ship pointed straight up/down
+  }
+  _deathRetreatDir.normalize();
+  _deathRetreatDir.y += 0.25;
+  _deathRetreatDir.normalize();
+  // floor of 2m: a literal 0-distance start (FP death) makes lookAt() degenerate
+  // (eye === target) and glues the camera inside the wreck mesh
+  deathCamStartRadius = Math.max(2, camRig.position.distanceTo(wreck.position));
+  deathCamRadius = deathCamStartRadius;
+  deathOrbitAngle = 0;
+
   wreckVel.copy(ship.velocity).multiplyScalar(0.6);
   wreckSpin.set(
     (Math.random() < 0.5 ? -1 : 1) * (2 + Math.random() * 2.5),
@@ -249,6 +310,11 @@ function frame() {
   if (phase === 'playing' || phase === 'escape') {
     ship.update(dt, input);
 
+    // engine thrum follows thrust input + current speed
+    const thrustInputMag = Math.hypot(input.axis.x, input.axis.y, input.axis.z);
+    const speedRatio = ship.velocity.length() / CONFIG.ship.maxSpeed;
+    sfx.setEngine(Math.min(1, Math.max(0, thrustInputMag * 0.6 + speedRatio * 0.6)));
+
     // firing
     fireCooldown -= dt;
     const W = CONFIG.weapons.laser;
@@ -295,6 +361,8 @@ function frame() {
 
     hud.setShields(ship.shields, CONFIG.ship.shields);
     hud.setEnergy(ship.energy, CONFIG.ship.energy);
+  } else {
+    sfx.setEngine(0);
   }
 
   // death cinematic: watch the ship tumble, pop, and become a landmark
@@ -324,8 +392,38 @@ function frame() {
       deathsite.recordDeath(seed, depth, wreck.position, wreck.quaternion);
       hud.showDeath(true);
     }
+
+    // camera: ease back from the wreck over ~1.5s, then slowly orbit once it's exploded
+    const pullT = Math.min(1, deathTimer / 1.5);
+    const eased = pullT * pullT * (3 - 2 * pullT); // smoothstep
+    // pulled back to 14 originally, but the HULL BREACH overlay's centered text sits
+    // right on top of a wreck that far away; 9m keeps it bigger in frame post-explosion
+    const desiredRadius = THREE.MathUtils.lerp(deathCamStartRadius, 9, eased);
+    if (exploded) deathOrbitAngle += dt * 0.35;
+    const cosA = Math.cos(deathOrbitAngle), sinA = Math.sin(deathOrbitAngle);
+    _deathOffsetDir.set(
+      _deathRetreatDir.x * cosA + _deathRetreatDir.z * sinA,
+      _deathRetreatDir.y,
+      -_deathRetreatDir.x * sinA + _deathRetreatDir.z * cosA
+    );
+    // ladder search toward desiredRadius so a blocked far candidate doesn't freeze the
+    // retreat at its current (possibly tiny) radius forever; frac=0 always falls back
+    // to the last known-safe radius, so this never retreats backward
+    let chosenRadius = deathCamRadius;
+    for (const frac of [1, 0.66, 0.33, 0]) {
+      const r = THREE.MathUtils.lerp(deathCamRadius, desiredRadius, frac);
+      _deathCamCandidate.copy(wreck.position).addScaledVector(_deathOffsetDir, r);
+      if (level.field.sample(_deathCamCandidate.x, _deathCamCandidate.y, _deathCamCandidate.z) <= -1.0) { chosenRadius = r; break; }
+    }
+    deathCamRadius = chosenRadius;
+    camRig.position.copy(wreck.position).addScaledVector(_deathOffsetDir, deathCamRadius);
+    // camRig is a plain Group, not a Camera: Object3D.lookAt() swaps eye/target for
+    // non-camera/non-light objects, so it points local -Z AWAY from the wreck. Flip it.
     camRig.lookAt(wreck.position);
-    camRig.rotateY(Math.PI); // camera looks down -Z; lookAt pointed +Z at the wreck
+    camRig.rotateY(Math.PI);
+    // once exploded, the centered HULL BREACH text sits directly over a dead-center
+    // wreck; nudge the yaw so the wreck reads beside the text instead of behind it
+    if (exploded) camRig.rotateY(0.34);
   }
 
   // explosion flash bloom
@@ -347,7 +445,7 @@ function frame() {
     thirdPerson = !thirdPerson;
     applyCameraMode();
   }
-  if (thirdPerson && (gamestate.phase === 'playing' || gamestate.phase === 'escape')) updateChaseCam();
+  if (thirdPerson && (gamestate.phase === 'playing' || gamestate.phase === 'escape')) updateChaseCam(dt);
 
   // camera shake: applied to the camera INSIDE the rig, so it also works while the
   // rig is detached in world space during the death cinematic
@@ -360,7 +458,7 @@ function frame() {
 }
 
 // ---------- boot ----------
-app.addEventListener('click', () => sfx.init(), { once: true });
+app.addEventListener('click', () => { sfx.init(); sfx.startAmbient(); }, { once: true });
 
 window.TR = {
   ready: false,
@@ -375,11 +473,37 @@ window.TR = {
     teleport(kind) { // 'spawn' | 'key' | 'reactor' | 'exit'
       const id = level.graph[kind + 'Id'];
       const n = level.graph.nodes.find((x) => x.id === id);
-      ship.object3d.position.copy(n.pos); ship.velocity.set(0, 0, 0);
+      ship.velocity.set(0, 0, 0);
+      // n.pos is the exact room center -- for the reactor that's ALSO the boss mesh's
+      // own position (see enemies.js _spawnReactor: group.position.copy(node.pos)), so
+      // landing straight on it embeds the camera inside the reactor geometry. And even
+      // where nothing occupies the center, the spawn-inherited quaternion can point
+      // steeply up/down a shaft, aiming the shot at a nearby wall/ceiling instead of the
+      // room. Back off along a level horizontal direction and look back at the center so
+      // debug teleport-and-screenshot lands with the room's built content in frame.
+      const dir = ship.forward(new THREE.Vector3());
+      dir.y = 0;
+      if (dir.lengthSq() < 1e-6) dir.set(0, 0, 1);
+      dir.normalize();
+      // teleport('exit') doubles as "put the ship at the exit" for win-condition checks
+      // (gamestate.js fires 'escaped' at distance < config.game.exitDist == 7); keep the
+      // pullback well inside that radius there so the exit teleport still wins the level.
+      const pullback = kind === 'exit'
+        ? Math.min(Math.max(3, (n.radius || 6) * 0.75), CONFIG.game.exitDist - 2)
+        : Math.max(3, (n.radius || 6) * 0.75);
+      ship.object3d.position.copy(n.pos).addScaledVector(dir, pullback);
+      dir.multiplyScalar(-1); // face back toward the room center
+      const lookMat = new THREE.Matrix4().lookAt(new THREE.Vector3(), dir, new THREE.Vector3(0, 1, 0));
+      ship.object3d.quaternion.setFromRotationMatrix(lookMat);
     },
     god() { ship.takeDamage = () => false; ship.spendEnergy = () => true; },
     toggleMap() { automap.toggle(); },
     showcase(seed = 42) { // one of each robot class lined up ahead of the ship, for eyeballing
+      // a showcase you can't see the player ship in isn't much of a showcase: force
+      // third-person and a level orientation so both the ship and the lineup are framed
+      thirdPerson = true;
+      applyCameraMode();
+      levelShipOrientation();
       const rng = makeRng(seed);
       const kinds = ['grunt', 'claw', 'hulk', 'sniper', 'turret', 'reactor'];
       const group = new THREE.Group();

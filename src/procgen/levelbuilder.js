@@ -5,7 +5,9 @@
 // buildLevel(seed, config, onProgress?) -> {
 //   graph,                       // from generateLevelGraph
 //   field,                       // from createDensityField
-//   caveGroup: THREE.Group,      // all cave chunk meshes, ready to scene.add()
+//   caveGroup: THREE.Group,      // all cave chunk meshes + the decor group (decor.js),
+//                                // ready to scene.add(); automap hologram + level
+//                                // disposal pick decor up automatically via traverse
 //   spawnPos: THREE.Vector3,     // spawn node center
 //   spawnQuat: THREE.Quaternion, // facing the first corridor (toward spawn's first neighbor)
 // }
@@ -30,6 +32,7 @@ import * as THREE from 'three';
 import { generateLevelGraph } from './graph.js';
 import { createDensityField } from './density.js';
 import { polygonize } from './marchingcubes.js';
+import { buildDecor } from './decor.js';
 import { grungeTexture } from '../util/grungetex.js';
 
 // One shared material for every chunk mesh across the app lifetime (levels reload,
@@ -153,6 +156,11 @@ export function buildLevel(seed, config, onProgress) {
       }
     }
   }
+
+  // industrial dressing for built sections; lives INSIDE caveGroup so the automap
+  // hologram and disposeLevel() pick it up automatically (materials are shared
+  // module-scope in decor.js, disposal only touches geometries)
+  caveGroup.add(buildDecor(field, graph, cfg));
 
   const spawnNode = graph.nodes.find((n) => n.id === graph.spawnId);
   const spawnPos = spawnNode.pos.clone();
