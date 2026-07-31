@@ -45,6 +45,20 @@ const _q = new THREE.Quaternion();
 const _aimQuat = new THREE.Quaternion();
 const _box = new THREE.Box3();
 const _boxSize = new THREE.Vector3();
+const _lookM = new THREE.Matrix4();
+const _zero = new THREE.Vector3(0, 0, 0);
+const _altUp = new THREE.Vector3(1, 0, 0);
+
+// robots face local +Z along dir, roll-stabilized to world up (setFromUnitVectors
+// gave the minimal arc, which left bodies banked at random angles: Trent's
+// "orientation is off" bug). Matrix4.lookAt(eye, target, up) points -Z from eye
+// to target, so eye=dir target=origin puts +Z on dir.
+function aimAlong(dir, out) {
+  const up = Math.abs(dir.y) > 0.95 ? _altUp : UP;
+  _lookM.lookAt(dir, _zero, up);
+  out.setFromRotationMatrix(_lookM);
+  return out;
+}
 
 function randomUnitVector(rng, out) {
   const z = randRange(rng, -1, 1);
@@ -444,11 +458,11 @@ export class EnemyManager {
 
     b.mesh.position.copy(b.pos);
     if (combatFacing && dist > 0.001) {
-      _aimQuat.setFromUnitVectors(UNIT_Z, _dirToShip);
+      aimAlong(_dirToShip, _aimQuat);
       b.mesh.quaternion.slerp(_aimQuat, Math.min(1, dt * 5));
     } else if (b.velocity.lengthSq() > 0.0025) {
       _faceDir.copy(b.velocity).normalize();
-      _aimQuat.setFromUnitVectors(UNIT_Z, _faceDir);
+      aimAlong(_faceDir, _aimQuat);
       b.mesh.quaternion.slerp(_aimQuat, Math.min(1, dt * 6));
     }
   }
@@ -457,13 +471,16 @@ export class EnemyManager {
     const cfg = this.config.enemies.turret;
     if (!shipAlive) return;
 
-    _toShip.copy(shipPos).sub(t.pos);
+    // LOS must start OFF the wall: the turret body sits at sample≈0, so a raycast
+    // from t.pos hits rock at distance 0 and the turret never sees anything.
+    _muzzle.copy(t.pos).addScaledVector(t.normal, t.radius * 0.9);
+    _toShip.copy(shipPos).sub(_muzzle);
     const dist = _toShip.length();
     if (dist < 0.001) return;
     _dirToShip.copy(_toShip).multiplyScalar(1 / dist);
 
     const inRange = dist < cfg.fireRange;
-    const los = inRange && field.raycast(t.pos, _dirToShip, dist) === -1;
+    const los = inRange && field.raycast(_muzzle, _dirToShip, dist) === -1;
     if (!los) return;
 
     _q.copy(t.mesh.quaternion).invert();
@@ -474,7 +491,6 @@ export class EnemyManager {
     t.fireTimer -= dt;
     if (t.fireTimer <= 0 && this.projectiles) {
       t.fireTimer = cfg.fireCooldown;
-      _muzzle.copy(t.pos).addScaledVector(t.normal, t.radius * 0.6);
       this.projectiles.spawn('enemy', _muzzle, _dirToShip, 'enemyBolt');
     }
   }

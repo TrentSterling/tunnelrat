@@ -112,6 +112,44 @@ export class Input {
     return this._justPressed.has(code);
   }
 
+  // Xbox/standard-mapping gamepad, merged on top of keyboard+mouse each frame.
+  // Left stick strafe, right stick look, LB/RB roll, RT fire, LT boost,
+  // A/B strafe up/down, Start=Enter, Back=Tab (automap), Y=V (camera).
+  pollGamepad(dt) {
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    let gp = null;
+    for (const p of pads) if (p && p.connected) { gp = p; break; }
+
+    this._recompute(); // rebuild pure keyboard state, then merge the pad in
+    if (!gp) return;
+
+    const dz = (v) => (Math.abs(v) < 0.16 ? 0 : Math.sign(v) * ((Math.abs(v) - 0.16) / 0.84) ** 1.6);
+    const ax = gp.axes;
+    const bt = gp.buttons;
+    const held = (i) => !!bt[i] && (bt[i].pressed || bt[i].value > 0.5);
+
+    this.axis.x = Math.max(-1, Math.min(1, this.axis.x + dz(ax[0] ?? 0)));
+    this.axis.z = Math.max(-1, Math.min(1, this.axis.z + -dz(ax[1] ?? 0)));
+    this.axis.y = Math.max(-1, Math.min(1, this.axis.y + (held(0) ? 1 : 0) - (held(1) ? 1 : 0)));
+    this.axis.roll = Math.max(-1, Math.min(1, this.axis.roll + (held(5) ? 1 : 0) - (held(4) ? 1 : 0)));
+
+    // right stick as synthetic mouse pixels so ship.js needs no changes
+    this.mouseDX += dz(ax[2] ?? 0) * 680 * dt;
+    this.mouseDY += dz(ax[3] ?? 0) * 520 * dt;
+
+    if (held(7)) this.fire = true;   // RT
+    if (held(6)) this.boost = true;  // LT
+
+    // rising-edge buttons -> synthetic key codes
+    if (!this._gpPrev) this._gpPrev = [];
+    const edges = [[9, 'Enter'], [8, 'Tab'], [3, 'KeyV'], [2, 'KeyM']];
+    for (const [i, code] of edges) {
+      const now = held(i);
+      if (now && !this._gpPrev[i]) this._justPressed.add(code);
+      this._gpPrev[i] = now;
+    }
+  }
+
   endFrame() {
     this.mouseDX = 0;
     this.mouseDY = 0;

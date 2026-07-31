@@ -13,7 +13,10 @@ node tools/serve.mjs        # http://localhost:8123
 ```
 
 Click to lock the mouse. WASD + R/F strafe, mouse pitch/yaw, Q/E roll, Shift boost,
-click/Space fire, Tab automap, M mute, Enter retry/descend.
+click/Space fire, Tab automap, V chase cam, M mute, Enter retry/descend.
+Xbox controller works too: sticks strafe/look, bumpers roll, RT fire, LT boost,
+Start retry, Back automap, Y camera. Die and your burned ship + XP orbs wait
+where you fell.
 
 ## Verify
 

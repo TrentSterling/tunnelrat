@@ -30,11 +30,14 @@ import * as THREE from 'three';
 import { generateLevelGraph } from './graph.js';
 import { createDensityField } from './density.js';
 import { polygonize } from './marchingcubes.js';
+import { grungeTexture } from '../util/grungetex.js';
 
 // One shared material for every chunk mesh across the app lifetime (levels reload,
 // disposeLevel() in main.js only disposes geometries, so the material must not be
-// recreated per level or it would leak).
-const caveMaterial = new THREE.MeshLambertMaterial({ vertexColors: true });
+// recreated per level or it would leak). Grunge map multiplies under the vertex colors.
+const caveMaterial = new THREE.MeshLambertMaterial({ vertexColors: true, map: grungeTexture() });
+
+const UV_SCALE = 0.14; // world meters -> uv; 64px texture = chunky ~11cm texels
 
 const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
 
@@ -115,10 +118,29 @@ export function buildLevel(seed, config, onProgress) {
             colors[ci + 2] = clamp01((rockDeep.b + (rockShallow.b - rockDeep.b) * t) * (1 + jitter));
           }
 
+          // world-space box projection: uv from the two axes perpendicular to the
+          // dominant normal axis. Seams between projection axes vanish in the noise.
+          const uvs = new Float32Array(vertexCount * 2);
+          for (let v = 0; v < vertexCount; v++) {
+            const px = result.positions[v * 3];
+            const py = result.positions[v * 3 + 1];
+            const pz = result.positions[v * 3 + 2];
+            const nx = Math.abs(result.normals[v * 3]);
+            const ny = Math.abs(result.normals[v * 3 + 1]);
+            const nz = Math.abs(result.normals[v * 3 + 2]);
+            let u, w;
+            if (nx >= ny && nx >= nz) { u = py; w = pz; }
+            else if (ny >= nz) { u = px; w = pz; }
+            else { u = px; w = py; }
+            uvs[v * 2] = u * UV_SCALE;
+            uvs[v * 2 + 1] = w * UV_SCALE;
+          }
+
           const geo = new THREE.BufferGeometry();
           geo.setAttribute('position', new THREE.BufferAttribute(result.positions, 3));
           geo.setAttribute('normal', new THREE.BufferAttribute(result.normals, 3));
           geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+          geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
 
           const mesh = new THREE.Mesh(geo, caveMaterial);
           mesh.matrixAutoUpdate = false;

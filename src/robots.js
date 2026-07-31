@@ -10,6 +10,7 @@
 // Scale: bodies fit roughly inside config radius for their class (caller scales if needed).
 import * as THREE from 'three';
 import { randRange, randInt, pick } from './util/rng.js';
+import { grungeTexture } from './util/grungetex.js';
 
 // Descent-flavored palettes: [hull, panel/trim, dark, eyeEmissive]
 const PALETTES = [
@@ -23,12 +24,13 @@ const PALETTES = [
 
 function mats(rng) {
   const [hull, panel, dark, eye] = pick(rng, PALETTES);
+  const map = grungeTexture();
   return {
-    hull: new THREE.MeshLambertMaterial({ color: hull, flatShading: true }),
-    panel: new THREE.MeshLambertMaterial({ color: panel, flatShading: true }),
-    dark: new THREE.MeshLambertMaterial({ color: dark, flatShading: true }),
+    hull: new THREE.MeshLambertMaterial({ color: hull, flatShading: true, map }),
+    panel: new THREE.MeshLambertMaterial({ color: panel, flatShading: true, map }),
+    dark: new THREE.MeshLambertMaterial({ color: dark, flatShading: true, map }),
     eye: new THREE.MeshLambertMaterial({ color: eye, emissive: eye, emissiveIntensity: 2.6 }),
-    spike: new THREE.MeshLambertMaterial({ color: 0xb8b8c0, flatShading: true }),
+    spike: new THREE.MeshLambertMaterial({ color: 0xb8b8c0, flatShading: true, map }),
   };
 }
 
@@ -169,7 +171,32 @@ function buildReactor(g, m, rng) {
   return { coreMat };
 }
 
-const BUILDERS = { grunt: buildGrunt, claw: buildClaw, hulk: buildHulk, sniper: buildSniper, turret: buildTurret, reactor: buildReactor };
+// SHIP: the player's Pyro-GX-ish interceptor (seen only in the death cinematic
+// and as a burned corpse). Wedge fuselage, swept wings, twin engine pods. Forward +Z.
+function buildShip(g, m, rng) {
+  const grey = new THREE.MeshLambertMaterial({ color: 0x8a9096, flatShading: true, map: grungeTexture() });
+  const trim = new THREE.MeshLambertMaterial({ color: 0x3f7a4a, flatShading: true, map: grungeTexture() });
+  const fus = part(g, new THREE.OctahedronGeometry(1, 0), grey);
+  fus.scale.set(0.7, 0.45, 1.6);
+  part(g, box(0.55, 0.22, 1.1), trim, 0, 0.3, 0.15);                 // spine
+  part(g, box(0.5, 0.18, 0.35), m.eye, 0, 0.24, 0.85);              // canopy strip
+  for (const side of [-1, 1]) {
+    part(g, box(1.25, 0.08, 0.8), grey, side * 0.95, 0, -0.35, 0, side * 0.45, side * 0.12); // swept wing
+    part(g, spike(0.09, 0.5, 4), trim, side * 1.5, 0, -0.75, 0, 0, side * 1.9);              // wingtip
+    part(g, prism(0.22, 0.7, 6), trim, side * 0.45, -0.05, -0.95, Math.PI / 2, 0, 0);        // engine pod
+  }
+}
+
+// darken a built robot/ship into a burned wreck (fresh materials, originals untouched)
+export function scorch(group) {
+  const burned = new THREE.MeshLambertMaterial({ color: 0x1c1a18, flatShading: true, map: grungeTexture() });
+  const ember = new THREE.MeshLambertMaterial({ color: 0x100c0a, emissive: 0xff4a10, emissiveIntensity: 0.35, flatShading: true });
+  let i = 0;
+  group.traverse((o) => { if (o.isMesh) o.material = (i++ % 4 === 0) ? ember : burned; });
+  return group;
+}
+
+const BUILDERS = { grunt: buildGrunt, claw: buildClaw, hulk: buildHulk, sniper: buildSniper, turret: buildTurret, reactor: buildReactor, ship: buildShip };
 
 export function buildRobot(kind, rng) {
   const g = new THREE.Group();

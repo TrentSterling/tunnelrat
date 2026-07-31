@@ -12,7 +12,8 @@ import { HUD } from './hud.js';
 import { Automap } from './automap.js';
 import { GameState } from './gamestate.js';
 import { sfx } from './sfx.js';
-import { buildRobot } from './robots.js';
+import { buildRobot, scorch } from './robots.js';
+import { DeathSite } from './deathsite.js';
 import { makeRng } from './util/rng.js';
 
 const app = document.getElementById('app');
@@ -66,6 +67,80 @@ let fireCooldown = 0;
 let shake = 0;
 let alarmTimer = 0;
 let mapPollTimer = 0;
+let xp = 0;
+
+// death cinematic: third-person wreck tumble, explosion, then the corpse run
+let deathsite = null; // created after scene systems exist
+let wreck = null;
+const wreckVel = new THREE.Vector3();
+const wreckSpin = new THREE.Vector3();
+let deathTimer = 0;
+let exploded = false;
+let flashT = -1;
+const flashMesh = new THREE.Mesh(
+  new THREE.SphereGeometry(1, 8, 6),
+  new THREE.MeshBasicMaterial({ color: 0xffa030, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false })
+);
+flashMesh.visible = false;
+scene.add(flashMesh);
+
+// third-person chase cam (Freespace-style): V toggles, ship model shows in third
+let thirdPerson = false;
+let playerShipModel = null;
+const CHASE_OFFSET = new THREE.Vector3(0, 1.9, 6.2); // local to ship: up + behind
+const _chaseWorld = new THREE.Vector3();
+const _chaseLocal = new THREE.Vector3();
+
+function ensurePlayerShipModel() {
+  if (playerShipModel) return;
+  playerShipModel = buildRobot('ship', makeRng(CONFIG.seed ^ 0x5451)).group;
+  playerShipModel.rotation.y = Math.PI; // model faces +Z, ship flies -Z
+  playerShipModel.visible = false;
+  ship.object3d.add(playerShipModel);
+}
+
+function applyCameraMode() {
+  ensurePlayerShipModel();
+  playerShipModel.visible = thirdPerson;
+  camRig.quaternion.identity();
+  camRig.position.copy(thirdPerson ? CHASE_OFFSET : _chaseLocal.set(0, 0, 0));
+}
+
+function updateChaseCam() {
+  // pull the camera in when the chase offset would sit inside rock
+  let t = 1;
+  for (const tryT of [1, 0.75, 0.5, 0.32]) {
+    t = tryT;
+    _chaseLocal.copy(CHASE_OFFSET).multiplyScalar(tryT);
+    _chaseWorld.copy(_chaseLocal).applyQuaternion(ship.object3d.quaternion).add(ship.object3d.position);
+    if (level.field.sample(_chaseWorld.x, _chaseWorld.y, _chaseWorld.z) < -0.8) break;
+  }
+  camRig.position.copy(CHASE_OFFSET).multiplyScalar(t);
+}
+
+function startDeathCinematic() {
+  if (playerShipModel) playerShipModel.visible = false; // the wreck takes over
+  wreck = buildRobot('ship', makeRng(seed ^ 0xD00D)).group;
+  wreck.position.copy(ship.object3d.position);
+  wreck.quaternion.copy(ship.object3d.quaternion);
+  scene.add(wreck);
+  scene.attach(camRig); // freeze the camera in world space to watch the tumble
+  wreckVel.copy(ship.velocity).multiplyScalar(0.6);
+  wreckSpin.set(
+    (Math.random() < 0.5 ? -1 : 1) * (2 + Math.random() * 2.5),
+    (Math.random() < 0.5 ? -1 : 1) * (1 + Math.random() * 2),
+    (Math.random() < 0.5 ? -1 : 1) * (2 + Math.random() * 2.5)
+  );
+  deathTimer = 0;
+  exploded = false;
+}
+
+function clearWreck() {
+  if (!wreck) return;
+  scene.remove(wreck);
+  wreck.traverse((o) => { if (o.isMesh) { o.geometry?.dispose(); o.material?.dispose(); } });
+  wreck = null;
+}
 
 function disposeLevel() {
   if (!level) return;
@@ -78,6 +153,8 @@ function disposeLevel() {
 
 function loadLevel(newSeed, newDepth) {
   disposeLevel();
+  clearWreck();
+  deathsite?.clearProps();
   seed = newSeed; depth = newDepth;
   loadingEl.style.display = 'flex';
   loadStatusEl.textContent = 'DESCENDING TO DEPTH ' + depth + '...';
@@ -96,6 +173,8 @@ function loadLevel(newSeed, newDepth) {
       ship.field = level.field;
     }
     ship.reset(level.spawnPos.clone(), level.spawnQuat.clone());
+    ship.object3d.add(camRig); // re-dock the death cam
+    applyCameraMode();
 
     projectiles = new ProjectileSystem(scene, level.field, CONFIG);
     if (!enemies) enemies = new EnemyManager(scene, CONFIG);
@@ -111,6 +190,10 @@ function loadLevel(newSeed, newDepth) {
 
     if (!gamestate) gamestate = new GameState(scene, CONFIG);
     gamestate.startLevel(level.graph, level.field, depth);
+
+    if (!deathsite) deathsite = new DeathSite(scene);
+    deathsite.buildProps(seed, depth);
+    hud.setXP(xp);
 
     if (!automap) automap = new Automap(level.graph);
     else automap.rebuild(level.graph);
@@ -147,18 +230,20 @@ function handleEvents(events) {
     else if (ev === 'doorOpen') { sfx.play('unlock'); hud.message('SECURITY DOOR OPEN'); hud.setObjective('DESTROY THE REACTOR'); automap.setDoorOpen(true); }
     else if (ev === 'escapeStart') { hud.message('REACTOR CRITICAL: GET OUT', 3200); hud.setObjective('REACH THE EXIT BEACON'); }
     else if (ev === 'escaped') { sfx.play('win'); hud.setTimer(null); hud.showWin(true, depth); strobe.intensity = 0; }
-    else if (ev === 'died') { sfx.play('die'); hud.showDeath(true); }
+    else if (ev === 'died') { sfx.play('die'); startDeathCinematic(); }
   }
 }
 
 // ---------- loop ----------
 const clock = new THREE.Clock();
+const _wreckNormal = new THREE.Vector3();
 
 function frame() {
   requestAnimationFrame(frame);
   const dt = Math.min(clock.getDelta(), 0.05);
   if (!level || !window.TR.ready) return;
 
+  input.pollGamepad(dt);
   const phase = gamestate.phase;
 
   if (phase === 'playing' || phase === 'escape') {
@@ -200,8 +285,55 @@ function frame() {
       if (alarmTimer <= 0) { alarmTimer = 0.95; sfx.play('alarm'); }
     }
 
+    // corpse run: hoover up the orbs you paid for
+    const gained = deathsite.update(dt, ship.object3d.position);
+    if (gained > 0) {
+      xp += gained;
+      hud.setXP(xp);
+      sfx.play('pickup');
+    }
+
     hud.setShields(ship.shields, CONFIG.ship.shields);
     hud.setEnergy(ship.energy, CONFIG.ship.energy);
+  }
+
+  // death cinematic: watch the ship tumble, pop, and become a landmark
+  if (gamestate.phase === 'dead' && wreck) {
+    deathTimer += dt;
+    wreck.position.addScaledVector(wreckVel, dt);
+    wreck.rotation.x += wreckSpin.x * dt;
+    wreck.rotation.y += wreckSpin.y * dt;
+    wreck.rotation.z += wreckSpin.z * dt;
+    const s = level.field.sample(wreck.position.x, wreck.position.y, wreck.position.z);
+    if (s > -1.2) { // clang off the cave walls while tumbling
+      level.field.collisionNormal(wreck.position.x, wreck.position.y, wreck.position.z, _wreckNormal);
+      wreck.position.addScaledVector(_wreckNormal, s + 1.2);
+      const into = wreckVel.dot(_wreckNormal);
+      if (into < 0) { wreckVel.addScaledVector(_wreckNormal, -into * 1.5); sfx.play('hitWall'); }
+    }
+    if (!exploded && deathTimer > 1.6) {
+      exploded = true;
+      scorch(wreck);
+      wreckVel.multiplyScalar(0.15);
+      wreckSpin.multiplyScalar(0.2);
+      sfx.play('bigExplode');
+      shake = 1.2;
+      flashMesh.position.copy(wreck.position);
+      flashMesh.visible = true;
+      flashT = 0;
+      deathsite.recordDeath(seed, depth, wreck.position, wreck.quaternion);
+      hud.showDeath(true);
+    }
+    camRig.lookAt(wreck.position);
+    camRig.rotateY(Math.PI); // camera looks down -Z; lookAt pointed +Z at the wreck
+  }
+
+  // explosion flash bloom
+  if (flashT >= 0) {
+    flashT += dt;
+    const k = flashT / 0.5;
+    if (k >= 1) { flashT = -1; flashMesh.visible = false; }
+    else { flashMesh.scale.setScalar(1 + k * 9); flashMesh.material.opacity = 0.9 * (1 - k); }
   }
 
   // restart / next depth
@@ -211,10 +343,16 @@ function frame() {
   }
   if (input.justPressed('Tab')) automap.toggle();
   if (input.justPressed('KeyM')) sfx.setMuted(!sfx.muted);
+  if (input.justPressed('KeyV') && gamestate.phase !== 'dead') {
+    thirdPerson = !thirdPerson;
+    applyCameraMode();
+  }
+  if (thirdPerson && (gamestate.phase === 'playing' || gamestate.phase === 'escape')) updateChaseCam();
 
-  // camera shake
+  // camera shake: applied to the camera INSIDE the rig, so it also works while the
+  // rig is detached in world space during the death cinematic
   shake = Math.max(0, shake - dt * 2.2);
-  camRig.position.set((Math.random() - 0.5) * shake * 0.4, (Math.random() - 0.5) * shake * 0.4, 0);
+  camera.position.set((Math.random() - 0.5) * shake * 0.4, (Math.random() - 0.5) * shake * 0.4, 0);
 
   renderer.render(scene, camera);
   if (automap.visible) automap.render(renderer, ship.object3d.position, ship.object3d.quaternion, enemies.list());

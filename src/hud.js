@@ -88,7 +88,9 @@ export class HUD {
     el.topleft = mk('div', 'hud-panel hud-topleft');
     el.depth = mk('div', 'hud-depth', 'DEPTH 1');
     el.objective = mk('div', 'hud-objective', '');
-    el.topleft.append(el.depth, el.objective);
+    el.xp = mk('div', 'hud-objective', 'XP 0');
+    el.xp.style.color = 'var(--accent2)';
+    el.topleft.append(el.depth, el.objective, el.xp);
 
     el.bottomleft = mk('div', 'hud-panel hud-bottomleft');
     el.shieldLabel = mk('div', 'hud-label', 'SHLD');
@@ -156,6 +158,10 @@ export class HUD {
 
   setDepth(n) {
     this.el.depth.textContent = 'DEPTH ' + n;
+  }
+
+  setXP(n) {
+    this.el.xp.textContent = 'XP ' + n;
   }
 
   setObjective(text) {
