@@ -142,7 +142,7 @@ const server = http.createServer((req,res)=>{
       assert.equal(await page.evaluate(()=>!!document.pointerLockElement),false,'About must not capture the pointer');
       assert.equal(await page.locator('[data-tront-discovery-game="'+repository+'"]').count(),0,'no self promotion');
       assert.equal(await page.locator('[data-tront-discovery-game="smear"] video').count(),0);
-      assert.equal(await page.locator('[data-tront-discovery-game]').count(),4);
+      assert.equal(await page.locator('[data-tront-discovery-game]').count(),3);
       assert.equal(await page.locator('[data-tront-discovery-status]').count(),0);
       await page.waitForSelector('.tront-discovery--lightweight');
       await page.locator('[data-tront-discovery-game="craftmine"]').scrollIntoViewIfNeeded();
@@ -156,7 +156,7 @@ const server = http.createServer((req,res)=>{
         }));
         await page.waitForFunction(()=>!document.querySelector('.tront-discovery--lightweight'));
         await page.locator('[data-tront-discovery-cards]').scrollIntoViewIfNeeded();
-        await page.waitForFunction(()=>document.querySelectorAll('[data-tront-discovery-video][src]').length===3);
+        await page.waitForFunction(()=>document.querySelectorAll('[data-tront-discovery-video][src]').length===2);
         await page.waitForFunction(()=>[...document.querySelectorAll('[data-tront-discovery-video]')].every(v=>!v.paused&&v.currentTime>0));
         assert.equal(await page.locator('[data-tront-discovery-game="smear"] video').count(),0);
         assert.equal(await page.locator('[data-tront-discovery-video]').evaluateAll(videos=>videos.every(v=>v.loop&&v.muted&&v.playsInline)),true);

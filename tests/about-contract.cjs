@@ -19,7 +19,7 @@ test('approved shared source is pinned byte for byte', () => {
     const bytes = fs.readFileSync(path.join(root,file));
     assert.equal(crypto.createHash('sha256').update(bytes).digest('hex'), hash);
   }
-  assert.equal(manifest.upstreamCommit, '83dbfb4d8241501012c5ec22be49d79f28ccf6b7');
+  assert.equal(manifest.upstreamCommit, 'fcda637550b9237140c89f9e42465ddd1cb07bf0');
 });
 test('one collapsed host, local assets, early scoped input integration', () => {
   assert.equal((html.match(/data-tront-discovery data-current-game/g)||[]).length,1);
