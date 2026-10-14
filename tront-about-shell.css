@@ -1,0 +1,39 @@
+#trontAbout.tront-about {
+    position: fixed; left: 12px; top: calc(var(--about-view-height, 100dvh) - 12px);
+    bottom: auto; transform: translateY(-100%); z-index: 2147483000;
+    color: #edf1f4; text-align: left; font: 13px/1.5 system-ui, sans-serif;
+    max-width: calc(var(--about-view-width, 100vw) - 24px); user-select: text;
+}
+#trontAbout > summary {
+    display: inline-block; cursor: pointer; list-style: none;
+    padding: 8px 12px; min-height: 40px; box-sizing: border-box;
+    background: var(--about-surface, #171c25); color: #edf1f4;
+    border: 1px solid var(--about-accent, #9bbdff); border-radius: 6px;
+    font: inherit; user-select: none;
+}
+#trontAbout > summary::-webkit-details-marker { display: none; }
+#trontAbout > summary:focus-visible, #trontAbout button:focus-visible {
+    outline: 3px solid var(--about-accent, #9bbdff); outline-offset: 3px;
+}
+#trontAbout > .tront-discovery {
+    --td-surface: var(--about-surface, #171c25); --td-border: #59636c;
+    --td-text: #edf1f4; --td-muted: #c9d1d8;
+    --td-purple: var(--about-accent, #9bbdff); --td-teal: var(--about-accent, #9bbdff);
+    width: min(740px, calc(var(--about-view-width, 100vw) - 24px));
+    max-height: min(calc(var(--about-view-height, 100dvh) * .7), 650px); overflow: auto; overscroll-behavior: contain;
+    margin: 8px 0 0; box-shadow: 0 12px 40px #0009; touch-action: pan-y;
+}
+#trontAbout .tront-discovery__heading { display: flex; align-items: start; gap: 16px; justify-content: space-between; }
+#trontAbout [data-tront-about-close] {
+    flex: none; cursor: pointer; font: inherit; color: var(--td-text);
+    background: transparent; border: 1px solid var(--td-border); border-radius: 5px;
+    padding: 7px 10px; min-height: 40px;
+}
+#trontAbout .tront-discovery__about { grid-template-columns: minmax(0, 1fr); gap: 1rem; }
+#trontAbout .tront-discovery__links { padding: 0; border: 0; }
+#trontAbout .tront-discovery__links-list { list-style: none; }
+#trontAbout .tront-discovery__heading h2 { font-size: 1.2rem; }
+@media (max-height: 640px) {
+    #trontAbout.tront-about { top: 12px; bottom: auto; transform: none; left: auto; right: calc(12px + var(--about-view-right, 0px)); }
+    #trontAbout > .tront-discovery { max-height: calc(var(--about-view-height, 100dvh) - 80px); }
+}
