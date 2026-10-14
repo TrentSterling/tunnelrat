@@ -87,7 +87,7 @@
 .tront-discovery__games-title { margin-bottom: .75rem; }
 .tront-discovery__grid {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: .8rem;
     align-items: stretch;
 }
@@ -162,13 +162,10 @@
     font-size: .82rem;
     line-height: 1.5;
 }
-.tront-discovery__status {
-    margin: .75rem 0 0;
-    color: var(--td-muted);
-    font-size: .76rem;
-    line-height: 1.45;
-}
-.tront-discovery__status:empty { display: none; }
+.tront-discovery--lightweight .tront-discovery__grid { gap: .5rem; }
+.tront-discovery--lightweight .tront-discovery__media { aspect-ratio: 2 / 1; }
+.tront-discovery--lightweight .tront-discovery__content { padding: .5rem .6rem .6rem; }
+.tront-discovery--lightweight .tront-discovery__description { display: none; }
 @media (max-width: 760px) {
     .tront-discovery__about { grid-template-columns: minmax(0, 1fr); gap: .8rem; }
     .tront-discovery__links { padding: .8rem 0 0; border-left: 0; border-top: 1px solid var(--td-border); }

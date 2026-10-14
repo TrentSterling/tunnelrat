@@ -142,15 +142,39 @@ const server = http.createServer((req,res)=>{
       assert.equal(await page.evaluate(()=>!!document.pointerLockElement),false,'About must not capture the pointer');
       assert.equal(await page.locator('[data-tront-discovery-game="'+repository+'"]').count(),0,'no self promotion');
       assert.equal(await page.locator('[data-tront-discovery-game="smear"] video').count(),0);
+      assert.equal(await page.locator('[data-tront-discovery-game]').count(),4);
+      assert.equal(await page.locator('[data-tront-discovery-status]').count(),0);
+      await page.waitForSelector('.tront-discovery--lightweight');
+      await page.locator('[data-tront-discovery-game="craftmine"]').scrollIntoViewIfNeeded();
+      await page.waitForTimeout(200);
+      assert.equal(mp4.length,0,'visible animated game keeps discovery poster only');
       if(mode==='desktop') {
-        const card=page.locator('[data-tront-discovery-game="craftmine"]');
-        await card.scrollIntoViewIfNeeded(); await card.hover();
-        await page.waitForFunction(()=>!!document.querySelector('[data-tront-discovery-video][src]'));
-        assert.equal(await page.locator('[data-tront-discovery-video]').count(),1);
-      } else {
-        await page.locator('[data-tront-discovery-game="craftmine"]').scrollIntoViewIfNeeded();
-        if(mode!=='touch')await page.locator('[data-tront-discovery-game="craftmine"]').hover();
-        await page.waitForTimeout(200); assert.equal(mp4.length,0,'fallback must stay poster only');
+        // Exercise the shared resource transition without changing shipped game
+        // behavior: temporarily remove only the marked game surface from view.
+        await page.locator('[data-tront-discovery-game-surface]').evaluateAll(nodes=>nodes.forEach(e=>{
+          e.dataset.aboutTestDisplay=e.style.display;e.style.display='none';
+        }));
+        await page.waitForFunction(()=>!document.querySelector('.tront-discovery--lightweight'));
+        await page.locator('[data-tront-discovery-cards]').scrollIntoViewIfNeeded();
+        await page.waitForFunction(()=>document.querySelectorAll('[data-tront-discovery-video][src]').length===3);
+        await page.waitForFunction(()=>[...document.querySelectorAll('[data-tront-discovery-video]')].every(v=>!v.paused&&v.currentTime>0));
+        assert.equal(await page.locator('[data-tront-discovery-game="smear"] video').count(),0);
+        assert.equal(await page.locator('[data-tront-discovery-video]').evaluateAll(videos=>videos.every(v=>v.loop&&v.muted&&v.playsInline)),true);
+        await page.locator('[data-tront-discovery-game-surface]').evaluateAll(nodes=>nodes.forEach(e=>{
+          e.style.display=e.dataset.aboutTestDisplay;delete e.dataset.aboutTestDisplay;
+        }));
+        await page.waitForSelector('.tront-discovery--lightweight');
+        await page.waitForFunction(()=>document.querySelectorAll('[data-tront-discovery-video][src]').length===0);
+      } else if(mode==='reduced-motion'||mode==='save-data') {
+        await page.locator('[data-tront-discovery-game-surface]').evaluateAll(nodes=>nodes.forEach(e=>{
+          e.dataset.aboutTestDisplay=e.style.display;e.style.display='none';
+        }));
+        await page.waitForFunction(()=>!document.querySelector('.tront-discovery--lightweight'));
+        await page.waitForTimeout(300);
+        assert.equal(mp4.length,0,'motion/data preference stays poster only without a visible game');
+        await page.locator('[data-tront-discovery-game-surface]').evaluateAll(nodes=>nodes.forEach(e=>{
+          e.style.display=e.dataset.aboutTestDisplay;delete e.dataset.aboutTestDisplay;
+        }));
       }
       // Real keyboard Tab must move through native links instead of game bindings.
       await summary.focus(); await page.keyboard.press('Tab');
@@ -175,7 +199,14 @@ const server = http.createServer((req,res)=>{
       const bounds=await summary.boundingBox();
       assert.ok(bounds.x>=0 && bounds.y>=0 && bounds.x+bounds.width<=page.viewportSize().width+1);
       const gameplay=mode==='desktop'?await resumedPlay(page):null;
-      results.push({mode,mp4Requests:mp4.length,errors,gameplay});
+      // Verify native link activation without starting a second game or joining
+      // a public session: only the destination document is fulfilled by the test.
+      await page.route('**/craftmine/',route=>route.fulfill({contentType:'text/plain',body:'Navigation reached CraftMine'}));
+      await summary.click();
+      const gameLink=page.locator('[data-tront-discovery-game="craftmine"] a').first();
+      if(mode==='touch')await gameLink.tap();else{await gameLink.focus();await gameLink.press('Enter');}
+      await page.waitForURL(url=>url.pathname==='/craftmine/');
+      results.push({mode,mp4Requests:mp4.length,errors,gameplay,navigation:'native link activated'});
       await context.close();
     }
     fs.writeFileSync(path.join(output,`${repository}-results.json`),JSON.stringify(results,null,2));

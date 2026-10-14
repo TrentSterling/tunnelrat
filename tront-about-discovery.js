@@ -3,9 +3,12 @@
     if (!root || !root.document || root.TrontAboutDiscovery) return;
 
     var doc = root.document;
-    var STORAGE_KEY = 'tront-about-discovery-session-v1';
+    var LEGACY_STORAGE_KEY = 'tront-about-discovery-session-v1';
+    var STORAGE_KEY = 'tront-about-discovery-session-v2';
     var FIXED_IDS = ['craftmine', 'smear'];
     var RANDOM_IDS = ['inkride', 'tinytreads', 'tinyrise'];
+    var RANDOM_COUNT = 2;
+    var MAX_PREVIEWS = 3;
     var GAMES = [
         {
             id: 'craftmine', title: 'CraftMine', year: '2025',
@@ -17,7 +20,7 @@
             id: 'smear', title: 'SMEAR', year: '2026',
             href: '/smear/', poster: '/games/media/smear-2026.webp?v=475c3f008f06',
             preview: null,
-            description: 'Grab dummies, break things and drag the mess around.',
+            description: 'Grab dummies, break things and drag the mess around.'
         },
         {
             id: 'inkride', title: 'INKRIDE', year: '2026',
@@ -45,12 +48,15 @@
         tinytreads: 'tinytreads', 'tiny-treads': 'tinytreads', 'tiny-tread': 'tinytreads',
         tinyrise: 'tinyrise', 'tiny-rise': 'tinyrise'
     };
-    var memoryChoice = null;
-    var sharedVideo = null;
-    var activeCard = null;
-    var activeGeneration = 0;
+    var memoryChoices = null;
     var initialized = false;
     var visibilityObserver = null;
+    var surfaceObserver = null;
+    var allCards = [];
+    var allHosts = [];
+    var gameSurfaces = [];
+    var activePreviews = [];
+    var lightweightGameSurfaceVisible = false;
 
     function findGame(id) {
         for (var i = 0; i < GAMES.length; i += 1) if (GAMES[i].id === id) return GAMES[i];
@@ -63,7 +69,7 @@
         if (!text) return null;
         try {
             if (/^(https?:)?\/\//i.test(text)) text = new root.URL(text, root.location && root.location.href).pathname;
-        } catch (_) { /* A route string still works if URL construction is unavailable. */ }
+        } catch (_) { /* Route strings still work if URL construction is unavailable. */ }
         text = text.replace(/[?#].*$/, '').replace(/\/+$/, '').replace(/\/index(?:\.html?)?$/, '');
         var parts = text.split('/').filter(Boolean);
         for (var i = parts.length - 1; i >= 0; i -= 1) {
@@ -89,60 +95,82 @@
         try { return root.sessionStorage; } catch (_) { return null; }
     }
 
-    function safeRead(storage) {
-        try { return storage && storage.getItem(STORAGE_KEY); } catch (_) { return null; }
+    function safeRead(storage, key) {
+        try { return storage && storage.getItem(key); } catch (_) { return null; }
     }
 
-    function safeWrite(storage, value) {
-        try { if (storage) storage.setItem(STORAGE_KEY, value); } catch (_) { /* The in-memory choice remains stable for this page. */ }
+    function safeWrite(storage, key, value) {
+        try { if (storage) storage.setItem(key, value); } catch (_) { /* The in-memory choice remains stable for this page. */ }
     }
 
     function isRandomId(id) {
         return RANDOM_IDS.indexOf(id) !== -1;
     }
 
-    function stableSessionChoice(storage, random) {
-        var saved = safeRead(storage);
-        if (isRandomId(saved)) {
-            memoryChoice = saved;
-            return saved;
-        }
-        if (isRandomId(memoryChoice)) {
-            safeWrite(storage, memoryChoice);
-            return memoryChoice;
-        }
-        var roll = Number(random());
-        if (!isFinite(roll)) roll = 0;
-        roll = Math.max(0, Math.min(0.999999999, roll));
-        var selected = RANDOM_IDS[Math.floor(roll * RANDOM_IDS.length)];
-        memoryChoice = selected;
-        safeWrite(storage, selected);
-        return selected;
+    function validChoicePair(value) {
+        if (!Array.isArray(value) || value.length !== RANDOM_COUNT) return false;
+        return isRandomId(value[0]) && isRandomId(value[1]) && value[0] !== value[1];
     }
 
-    function selectAdditionalGame(currentGame, options) {
+    function stableSessionChoices(storage, random) {
+        var saved = safeRead(storage, STORAGE_KEY);
+        if (saved) {
+            try {
+                var parsed = JSON.parse(saved);
+                if (validChoicePair(parsed)) {
+                    memoryChoices = parsed.slice();
+                    return memoryChoices.slice();
+                }
+            } catch (_) { /* A stale or malformed session value is replaced below. */ }
+        }
+        if (validChoicePair(memoryChoices)) {
+            safeWrite(storage, STORAGE_KEY, JSON.stringify(memoryChoices));
+            return memoryChoices.slice();
+        }
+
+        var legacyChoice = safeRead(storage, LEGACY_STORAGE_KEY);
+        var firstIndex = isRandomId(legacyChoice) ? RANDOM_IDS.indexOf(legacyChoice) : -1;
+        if (firstIndex === -1) {
+            var roll = Number(random());
+            if (!isFinite(roll)) roll = 0;
+            roll = Math.max(0, Math.min(0.999999999, roll));
+            firstIndex = Math.floor(roll * RANDOM_IDS.length);
+        }
+        memoryChoices = [
+            RANDOM_IDS[firstIndex],
+            RANDOM_IDS[(firstIndex + 1) % RANDOM_IDS.length]
+        ];
+        safeWrite(storage, STORAGE_KEY, JSON.stringify(memoryChoices));
+        if (!legacyChoice) safeWrite(storage, LEGACY_STORAGE_KEY, memoryChoices[0]);
+        return memoryChoices.slice();
+    }
+
+    function selectAdditionalGames(currentGame, options) {
         options = options || {};
         var current = canonicalGameId(currentGame);
         var storage = getStorage(options);
         var random = typeof options.random === 'function' ? options.random : function () { return root.Math.random(); };
-        var selected = stableSessionChoice(storage, random);
-        if (selected !== current) return selected;
-
-        // Keep the session's random pick stable on other pages. If this is the
-        // current game, show the next eligible candidate without replacing it.
-        var index = RANDOM_IDS.indexOf(selected);
-        for (var offset = 1; offset < RANDOM_IDS.length; offset += 1) {
-            var alternate = RANDOM_IDS[(index + offset) % RANDOM_IDS.length];
-            if (alternate !== current) return alternate;
+        var choices = stableSessionChoices(storage, random);
+        var selected = choices.filter(function (id) { return id !== current; });
+        var firstIndex = RANDOM_IDS.indexOf(choices[0]);
+        for (var offset = 0; selected.length < RANDOM_COUNT && offset < RANDOM_IDS.length; offset += 1) {
+            var candidate = RANDOM_IDS[(firstIndex + offset) % RANDOM_IDS.length];
+            if (candidate !== current && selected.indexOf(candidate) === -1) selected.push(candidate);
         }
-        return null;
+        return selected.slice(0, RANDOM_COUNT);
+    }
+
+    function selectAdditionalGame(currentGame, options) {
+        return selectAdditionalGames(currentGame, options)[0] || null;
     }
 
     function selectGameIds(currentGame, options) {
         var current = canonicalGameId(currentGame);
         var ids = FIXED_IDS.filter(function (id) { return id !== current; });
-        var additional = selectAdditionalGame(current, options);
-        if (additional && ids.indexOf(additional) === -1) ids.push(additional);
+        var additional = selectAdditionalGames(current, options);
+        for (var i = 0; i < additional.length; i += 1) {
+            if (ids.indexOf(additional[i]) === -1) ids.push(additional[i]);
+        }
         return ids;
     }
 
@@ -163,79 +191,94 @@
         return rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.top < height && rect.right > 0 && rect.left < width;
     }
 
-    function setStatus(host, message) {
-        var status = host && host.querySelector && host.querySelector('[data-tront-discovery-status]');
-        if (status) status.textContent = message;
+    function hostIsLightweight(host) {
+        return lightweightGameSurfaceVisible || !!(host && host.getAttribute && host.getAttribute('data-tront-discovery-mode') === 'lightweight');
     }
 
-    function getSharedVideo() {
-        if (sharedVideo) return sharedVideo;
-        sharedVideo = doc.createElement('video');
-        sharedVideo.setAttribute('data-tront-discovery-video', '');
-        sharedVideo.setAttribute('aria-hidden', 'true');
-        sharedVideo.setAttribute('playsinline', '');
-        sharedVideo.setAttribute('tabindex', '-1');
-        sharedVideo.preload = 'none';
-        sharedVideo.muted = true;
-        sharedVideo.loop = true;
-        sharedVideo.playsInline = true;
-        sharedVideo.hidden = true;
-        return sharedVideo;
+    function releasePreview(card) {
+        var state = card && card._trontDiscoveryState;
+        var video = state && state.video;
+        if (!video) return;
+        state.generation += 1;
+        state.video = null;
+        video.onplaying = null;
+        video.onerror = null;
+        try { video.pause(); } catch (_) { /* The poster remains visible. */ }
+        video.hidden = true;
+        video.removeAttribute('src');
+        try { video.load(); } catch (_) { /* The source is already detached. */ }
+        if (video.parentNode) video.parentNode.removeChild(video);
+        activePreviews = activePreviews.filter(function (active) { return active !== card; });
     }
 
-    function releaseCurrent() {
-        if (!activeCard) return;
-        activeCard = null;
-        activeGeneration += 1;
-        if (sharedVideo) {
-            sharedVideo.onplaying = null;
-            sharedVideo.onerror = null;
-            try { sharedVideo.pause(); } catch (_) { /* The poster remains visible. */ }
-            sharedVideo.hidden = true;
-            sharedVideo.removeAttribute('src');
-            try { sharedVideo.load(); } catch (_) { /* The source is already detached. */ }
-        }
+    function releaseHost(host) {
+        allCards.forEach(function (card) {
+            if (card._trontDiscoveryHost === host) releasePreview(card);
+        });
     }
 
-    function failPreview(generation) {
-        if (generation !== activeGeneration || !activeCard) return;
-        var card = activeCard;
-        var title = card._trontDiscoveryGame.title;
-        releaseCurrent();
-        setStatus(card._trontDiscoveryHost, title + ' preview unavailable.');
+    function releaseAll() {
+        activePreviews.slice().forEach(releasePreview);
+    }
+
+    function failPreview(card, generation) {
+        var state = card && card._trontDiscoveryState;
+        if (!state || generation !== state.generation) return;
+        releasePreview(card);
     }
 
     function activate(card) {
-        if (!card || !previewAllowed()) return false;
-        if (!cardIsVisible(card)) return false;
-        if (activeCard === card && sharedVideo && sharedVideo.getAttribute('src')) return true;
+        if (!card || !previewAllowed() || doc.hidden || !cardIsVisible(card)) return false;
+        if (hostIsLightweight(card._trontDiscoveryHost)) return false;
+        var state = card._trontDiscoveryState;
         var game = card._trontDiscoveryGame;
-        if (!game || !game.preview || doc.hidden) return false;
-        if (activeCard) releaseCurrent();
+        if (!state || !game || !game.preview) return false;
+        if (state.video && state.video.getAttribute('src') === game.preview) return true;
+        if (activePreviews.length >= MAX_PREVIEWS) return false;
 
-        var video = getSharedVideo();
         var media = card.querySelector('.tront-discovery__media');
         if (!media) return false;
-        media.appendChild(video);
-        activeCard = card;
-        activeGeneration += 1;
-        var generation = activeGeneration;
+        var video = doc.createElement('video');
+        video.setAttribute('data-tront-discovery-video', '');
+        video.setAttribute('aria-hidden', 'true');
+        video.setAttribute('playsinline', '');
+        video.setAttribute('tabindex', '-1');
+        video.setAttribute('autoplay', '');
+        video.preload = 'none';
+        video.muted = true;
+        video.defaultMuted = true;
+        video.loop = true;
+        video.playsInline = true;
         video.hidden = true;
+        state.generation += 1;
+        var generation = state.generation;
+        state.video = video;
+        activePreviews.push(card);
         video.onplaying = function () {
-            if (generation !== activeGeneration || activeCard !== card) return;
+            if (state.generation !== generation || state.video !== video) return;
             video.hidden = false;
-            setStatus(card._trontDiscoveryHost, 'Previewing ' + game.title + '.');
         };
-        video.onerror = function () { failPreview(generation); };
+        video.onerror = function () { failPreview(card, generation); };
+        media.appendChild(video);
         video.setAttribute('src', game.preview);
-        video.setAttribute('data-tront-request', String(generation));
         video.load();
-        setStatus(card._trontDiscoveryHost, 'Loading ' + game.title + ' preview.');
         try {
             var playback = video.play();
-            if (playback && typeof playback.catch === 'function') playback.catch(function () { failPreview(generation); });
-        } catch (_) { failPreview(generation); }
+            if (playback && typeof playback.catch === 'function') playback.catch(function () { failPreview(card, generation); });
+        } catch (_) { failPreview(card, generation); }
         return true;
+    }
+
+    function syncCard(card) {
+        var state = card && card._trontDiscoveryState;
+        if (!state) return;
+        state.visible = cardIsVisible(card);
+        if (state.visible && previewAllowed() && !hostIsLightweight(card._trontDiscoveryHost)) activate(card);
+        else releasePreview(card);
+    }
+
+    function syncAllCards() {
+        allCards.forEach(syncCard);
     }
 
     function createText(tag, className, text) {
@@ -248,10 +291,9 @@
     function createCard(host, game) {
         var article = createText('article', 'tront-discovery__card');
         article.setAttribute('data-tront-discovery-game', game.id);
-        var state = { hovered: false, focused: false };
         article._trontDiscoveryGame = game;
         article._trontDiscoveryHost = host;
-        article._trontDiscoveryState = state;
+        article._trontDiscoveryState = {visible: false, generation: 0, video: null};
 
         var media = createText('div', 'tront-discovery__media');
         var imageLink = doc.createElement('a');
@@ -280,37 +322,10 @@
         content.appendChild(createText('p', 'tront-discovery__description', game.description));
         article.appendChild(media);
         article.appendChild(content);
-
-        article.addEventListener('pointerenter', function (event) {
-            if (event.pointerType === 'touch') return;
-            state.hovered = true;
-            activate(article);
-        });
-        article.addEventListener('pointerleave', function (event) {
-            if (event.pointerType === 'touch') return;
-            state.hovered = false;
-            if (!state.focused && activeCard === article) releaseCurrent();
-        });
-        article.addEventListener('focusin', function (event) {
-            var focusVisible = false;
-            try { focusVisible = event.target.matches && event.target.matches(':focus-visible'); } catch (_) { /* Keyboard modality remains the fallback. */ }
-            if (!focusVisible) return;
-            state.focused = true;
-            activate(article);
-        });
-        article.addEventListener('focusout', function (event) {
-            if (event.relatedTarget && article.contains(event.relatedTarget)) return;
-            state.focused = false;
-            if (!state.hovered && activeCard === article) releaseCurrent();
-        });
         return article;
     }
 
-    function updateRootsForMotion() {
-        if (!previewAllowed()) releaseCurrent();
-    }
-
-    function disclosureChain(host) {
+    function hostDisclosureChain(host) {
         var chain = [];
         for (var parent = host && host.parentElement; parent; parent = parent.parentElement) {
             if (parent.tagName && String(parent.tagName).toLowerCase() === 'details') chain.push(parent);
@@ -330,24 +345,26 @@
             if (watched.indexOf(disclosure) !== -1) continue;
             watched.push(disclosure);
             disclosure.addEventListener('toggle', function () {
-                var currentChain = disclosureChain(host);
+                var currentChain = hostDisclosureChain(host);
                 if (!disclosuresAreOpen(currentChain)) {
-                    if (activeCard && host.contains(activeCard)) releaseCurrent();
+                    releaseHost(host);
                     return;
                 }
                 setupHost(host);
+                syncAllCards();
             });
         }
     }
 
     function setupHost(host) {
-        if (!host || host._trontDiscoveryReady) return;
+        if (!host) return;
         var grid = host.querySelector('[data-tront-discovery-cards]');
         if (!grid) return;
-        var chain = disclosureChain(host);
+        var chain = hostDisclosureChain(host);
         watchDisclosures(host, chain);
-        if (!disclosuresAreOpen(chain)) return;
+        if (!disclosuresAreOpen(chain) || host._trontDiscoveryReady) return;
         host._trontDiscoveryReady = true;
+        allHosts.push(host);
         var selected = selectGameIds(currentGameFor(host), {storage: getStorage()});
         while (grid.firstChild) grid.removeChild(grid.firstChild);
         for (var i = 0; i < selected.length; i += 1) {
@@ -355,9 +372,35 @@
             if (!game) continue;
             var card = createCard(host, game);
             grid.appendChild(card);
+            allCards.push(card);
             if (visibilityObserver) visibilityObserver.observe(card);
         }
-        setStatus(host, '');
+        updateLightweightMode();
+    }
+
+    function updateLightweightMode() {
+        lightweightGameSurfaceVisible = gameSurfaces.some(function (surface) {
+            return surface._trontDiscoveryObserved ? !!surface._trontDiscoveryVisible : cardIsVisible(surface);
+        });
+        allHosts.forEach(function (host) {
+            var lightweight = hostIsLightweight(host);
+            if (host._trontDiscoveryLightweight === lightweight) return;
+            host._trontDiscoveryLightweight = lightweight;
+            if (host.classList) host.classList.toggle('tront-discovery--lightweight', lightweight);
+            if (lightweight) releaseHost(host);
+            else syncAllCards();
+        });
+    }
+
+    function observeGameSurfaces() {
+        gameSurfaces = Array.prototype.slice.call(doc.querySelectorAll('[data-tront-discovery-game-surface]'));
+        if (!surfaceObserver) return;
+        gameSurfaces.forEach(function (surface) { surfaceObserver.observe(surface); });
+    }
+
+    function updateRootsForMotion() {
+        if (!previewAllowed()) releaseAll();
+        else syncAllCards();
     }
 
     function start() {
@@ -368,30 +411,59 @@
                 entries.forEach(function (entry) {
                     var card = entry.target;
                     var state = card._trontDiscoveryState;
-                    if (!entry.isIntersecting || entry.intersectionRatio <= 0) {
-                        if (activeCard === card) releaseCurrent();
-                    } else if (state && (state.hovered || state.focused)) activate(card);
+                    if (!state) return;
+                    state.visible = !!entry.isIntersecting && entry.intersectionRatio > 0;
+                    if (state.visible) syncCard(card);
+                    else releasePreview(card);
                 });
-            }, { root: null, threshold: 0 });
+            }, {root: null, threshold: 0.01});
+            surfaceObserver = new root.IntersectionObserver(function (entries) {
+                entries.forEach(function (entry) {
+                    entry.target._trontDiscoveryObserved = true;
+                    entry.target._trontDiscoveryVisible = !!entry.isIntersecting && entry.intersectionRatio > 0;
+                });
+                updateLightweightMode();
+            }, {root: null, threshold: 0.01});
         }
+        observeGameSurfaces();
         var hosts = doc.querySelectorAll('[data-tront-discovery]');
         for (var i = 0; i < hosts.length; i += 1) setupHost(hosts[i]);
-        doc.addEventListener('visibilitychange', function () { if (doc.hidden) releaseCurrent(); });
+        if (!visibilityObserver) {
+            var onViewportChange = function () {
+                gameSurfaces.forEach(function (surface) {
+                    surface._trontDiscoveryObserved = true;
+                    surface._trontDiscoveryVisible = cardIsVisible(surface);
+                });
+                updateLightweightMode();
+                syncAllCards();
+            };
+            if (root.addEventListener) {
+                root.addEventListener('scroll', onViewportChange, {passive: true});
+                root.addEventListener('resize', onViewportChange, {passive: true});
+            }
+            onViewportChange();
+        }
+        doc.addEventListener('visibilitychange', function () {
+            if (doc.hidden) releaseAll();
+            else syncAllCards();
+        });
         try {
             var motion = root.matchMedia && root.matchMedia('(prefers-reduced-motion: reduce)');
             if (motion && motion.addEventListener) motion.addEventListener('change', updateRootsForMotion);
             else if (motion && motion.addListener) motion.addListener(updateRootsForMotion);
             var connection = root.navigator && root.navigator.connection;
             if (connection && connection.addEventListener) connection.addEventListener('change', updateRootsForMotion);
-        } catch (_) { /* Preferences are checked again whenever a preview is requested. */ }
+        } catch (_) { /* Preferences are checked again whenever visibility changes. */ }
+        updateLightweightMode();
         updateRootsForMotion();
     }
 
     var api = {
-        version: 1,
+        version: 2,
         canonicalGameId: canonicalGameId,
         currentGameFor: currentGameFor,
         selectAdditionalGame: selectAdditionalGame,
+        selectAdditionalGames: selectAdditionalGames,
         selectGameIds: selectGameIds,
         catalog: GAMES.map(function (game) { return Object.assign({}, game); })
     };
