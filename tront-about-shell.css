@@ -38,3 +38,7 @@
     #trontAbout.tront-about { top: 12px; bottom: auto; transform: none; left: auto; right: calc(12px + var(--about-view-right, 0px)); }
     #trontAbout > .tront-discovery { max-height: calc(var(--about-view-height, 100dvh) - 80px); }
 }
+
+/* Keep the collapsed disclosure clear of this game's original HUD. */
+#trontAbout.tront-about { top: 48px; left: auto; right: calc(12px + var(--about-view-right, 0px)); transform: none; }
+#trontAbout > .tront-discovery { max-height: min(calc(var(--about-view-height, 100dvh) * .7), calc(var(--about-view-height, 100dvh) - 108px)); }
