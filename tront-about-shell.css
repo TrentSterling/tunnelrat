@@ -33,6 +33,7 @@
 #trontAbout .tront-discovery__links { padding: 0; border: 0; }
 #trontAbout .tront-discovery__links-list { list-style: none; }
 #trontAbout .tront-discovery__heading h2 { font-size: 1.2rem; }
+#trontAbout:has([data-current-game="vibespace"]) { top: 12px; bottom: auto; transform: none; }
 @media (max-height: 640px) {
     #trontAbout.tront-about { top: 12px; bottom: auto; transform: none; left: auto; right: calc(12px + var(--about-view-right, 0px)); }
     #trontAbout > .tront-discovery { max-height: calc(var(--about-view-height, 100dvh) - 80px); }
