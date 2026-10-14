@@ -1,0 +1,25 @@
+name: About discovery checks
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+permissions:
+  contents: read
+jobs:
+  about-browser-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node --test tests/about-contract.cjs
+      - run: npm install --no-save --package-lock=false playwright@1.58.2
+      - run: npx playwright install --with-deps chromium
+      - run: node tests/about-browser.cjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: about-browser-evidence
+          path: tests/about-evidence/

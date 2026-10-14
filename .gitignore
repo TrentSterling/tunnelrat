@@ -1,1 +1,4 @@
 tools/out/
+
+node_modules/
+tests/about-evidence/

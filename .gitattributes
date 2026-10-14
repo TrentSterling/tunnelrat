@@ -1,0 +1,3 @@
+tront-about-*.js text eol=lf
+tront-about-*.css text eol=lf
+tests/about-* text eol=lf
