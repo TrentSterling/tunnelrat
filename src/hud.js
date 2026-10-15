@@ -143,13 +143,13 @@ export class HUD {
     const pct = clamp01(v / max);
     this.el.shieldFill.style.transform = 'scaleX(' + pct + ')';
     this.el.shieldFill.style.background = pct < 0.3 ? 'var(--danger)' : 'var(--accent)';
-    this.el.shieldValue.textContent = Math.max(0, Math.round(v)) + ' / ' + max;
+    setTextIfChanged(this.el.shieldValue, Math.max(0, Math.round(v)) + ' / ' + max);
   }
 
   setEnergy(v, max) {
     const pct = clamp01(v / max);
     this.el.energyFill.style.transform = 'scaleX(' + pct + ')';
-    this.el.energyValue.textContent = Math.max(0, Math.round(v)) + ' / ' + max;
+    setTextIfChanged(this.el.energyValue, Math.max(0, Math.round(v)) + ' / ' + max);
   }
 
   setKey(has) {
@@ -187,7 +187,7 @@ export class HUD {
     const s = Math.max(0, Math.ceil(seconds));
     const mm = String(Math.floor(s / 60)).padStart(2, '0');
     const ss = String(s % 60).padStart(2, '0');
-    this.el.timer.textContent = mm + ':' + ss;
+    setTextIfChanged(this.el.timer, mm + ':' + ss);
     this.el.timer.style.display = 'block';
     this.el.timer.classList.toggle('pulse', s < 10);
   }
@@ -220,4 +220,9 @@ function mk(tag, cls, text) {
 
 function clamp01(x) {
   return Math.max(0, Math.min(1, x));
+}
+
+// These labels are sampled every frame, but their displayed values change less often.
+function setTextIfChanged(el, text) {
+  if (el.textContent !== text) el.textContent = text;
 }
