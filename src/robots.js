@@ -13,6 +13,7 @@
 import * as THREE from 'three';
 import { randRange, randInt, pick } from './util/rng.js';
 import { grungeTexture } from './util/grungetex.js';
+import { buildPlayerShip } from './ship-model.js';
 
 // Descent-flavored palettes: [hull, panel/trim, dark, eyeEmissive]
 const PALETTES = [
@@ -346,84 +347,34 @@ function buildReactor(g, m, rng) {
   return { coreMat };
 }
 
-// SHIP: the player's Pyro-GX-ish interceptor (close-up in third person + death cam).
-// Central fuselage + raised glass canopy, forked tuning-fork prongs off the wing roots,
-// swept layered-armor wings, twin-belled engine block, underslung intake, mast antenna.
-// Forward +Z. ~35-40 parts.
-function buildShip(g, m, rng) {
-  const shipTex = grungeTexture();
-  const grey = new THREE.MeshLambertMaterial({ color: 0x8a9096, flatShading: true, map: shipTex });
-  const trim = new THREE.MeshLambertMaterial({ color: 0x3f7a4a, flatShading: true, map: shipTex });
-  const darkPanel = new THREE.MeshLambertMaterial({ color: 0x33383d, flatShading: true, map: shipTex });
-  const glass = new THREE.MeshLambertMaterial({ color: 0x0c1014, flatShading: true });
-  const engineGlow = new THREE.MeshLambertMaterial({ color: 0xff7a2f, emissive: 0xff7a2f, emissiveIntensity: 2.2, flatShading: true });
-
-  // -- central fuselage --
-  const fus = part(g, new THREE.OctahedronGeometry(1, 0), grey, 0, 0, 0.1);
-  fus.scale.set(0.62, 0.5, 1.7);
-  part(g, box(0.5, 0.22, 1.3), trim, 0, 0.32, 0.15);                       // dorsal spine plate
-  part(g, spike(0.3, 0.5, 4), darkPanel, 0, -0.02, 1.5, Math.PI / 2, 0, 0); // nose taper cone
-
-  // -- raised cockpit canopy: dark glass box + emissive rim --
-  part(g, box(0.4, 0.26, 0.5), glass, 0, 0.42, 0.5);      // canopy glass
-  part(g, box(0.46, 0.06, 0.58), m.eye, 0, 0.27, 0.5);    // emissive canopy rim glow
-
-  // -- twin forked prongs off the wing roots, jutting forward past the nose --
-  for (const side of [-1, 1]) {
-    const prong = new THREE.Group();
-    prong.position.set(side * 0.42, -0.08, 0.5);
-    prong.rotation.y = side * 0.1;
-    part(prong, box(0.14, 0.14, 0.3), darkPanel, 0, 0, 0);                    // root fairing
-    part(prong, box(0.08, 0.08, 1.3), trim, 0, 0, 0.75);                      // tapered shaft
-    part(prong, spike(0.08, 0.3, 4), darkPanel, 0, 0, 1.5, Math.PI / 2, 0, 0); // tip
-    g.add(prong);
-  }
-
-  // -- swept wings with layered armor plates --
-  for (const side of [-1, 1]) {
-    const wing = new THREE.Group();
-    g.add(wing);
-    part(wing, box(1.3, 0.09, 0.85), grey, side * 0.85, -0.05, -0.15, 0, 0, side * 0.32);     // main wing
-    part(wing, box(1.1, 0.06, 0.55), darkPanel, side * 0.95, -0.005, -0.1, 0, 0, side * 0.32); // layered plate
-    part(wing, box(0.85, 0.05, 0.32), trim, side * 1.05, 0.04, -0.05, 0, 0, side * 0.32);      // trim stripe
-    part(wing, spike(0.08, 0.42, 4), darkPanel, side * 1.55, -0.05, -0.55, 0, 0, side * 1.9);  // wingtip fin
-    addVents(wing, m, side * 0.6, -0.09, -0.3, 'z', 2, 0.28, 0.12, 0.05, 0.14, 0, side * 0.32, 0);
-  }
-
-  // -- engine block with twin engine bells (emissive orange glow discs) --
-  part(g, box(0.62, 0.42, 0.55), grey, 0, -0.02, -0.95);       // engine block housing
-  part(g, box(0.5, 0.1, 0.4), darkPanel, 0, 0.2, -0.95);        // top armor plate
-  for (const side of [-1, 1]) {
-    part(g, prism(0.24, 0.5, 8), darkPanel, side * 0.32, -0.05, -1.15, Math.PI / 2, 0, 0);  // engine bell housing
-    part(g, prism(0.17, 0.06, 8), engineGlow, side * 0.32, -0.05, -1.42, Math.PI / 2, 0, 0); // glow disc
-  }
-
-  // -- underslung intake --
-  part(g, box(0.5, 0.2, 0.6), darkPanel, 0, -0.32, 0.25); // intake housing
-  part(g, box(0.38, 0.08, 0.42), m.dark, 0, -0.32, 0.42); // dark recess inset
-
-  // -- antenna + rivets + scratched inserts --
-  addAntenna(g, m, 0.18, 0.5, 0.05, randRange(rng, 0.35, 0.5), 0, 0.15);
-  addRivetRow(g, m, rng, -0.24, 0.32, -0.4, 0.24, 0.32, -0.4, 4);
-  addGreebles(g, m, rng, 0.5, 2);
-}
-
 // darken a built robot/ship into a burned wreck (fresh materials, originals untouched).
 // Kept bright enough to read as a silhouette against the near-black death-cam
 // background: a fully-charcoal wreck disappears once the HULL BREACH overlay dims
 // the scene further, so burned stays a visible dark-grey (not near-black) and every
 // other part embers hot orange instead of a rare 1-in-4 accent.
 export function scorch(group) {
-  const burned = new THREE.MeshLambertMaterial({ color: 0x38312c, flatShading: true, map: grungeTexture() });
+  const isPlayerShip = group.name === 'tunnelrat-interceptor';
+  const burned = new THREE.MeshLambertMaterial({
+    color: isPlayerShip ? 0x63594e : 0x38312c, flatShading: true, map: grungeTexture(),
+    emissive: isPlayerShip ? 0x402014 : 0x000000, emissiveIntensity: 0.35,
+  });
   const ember = new THREE.MeshLambertMaterial({ color: 0x2a1208, emissive: 0xff5a18, emissiveIntensity: 1.8, flatShading: true });
   let i = 0;
-  group.traverse((o) => { if (o.isMesh) o.material = (i++ % 2 === 0) ? ember : burned; });
+  group.traverse((o) => {
+    if (!o.isMesh) return;
+    // The player hull is one painted batch. Keep soot on that hull and reserve
+    // heat for its drives/ports, rather than turning the entire batch orange.
+    o.material = isPlayerShip
+      ? (/cores|ports/.test(o.name) ? ember : burned)
+      : ((i++ % 2 === 0) ? ember : burned);
+  });
   return group;
 }
 
-const BUILDERS = { grunt: buildGrunt, claw: buildClaw, hulk: buildHulk, sniper: buildSniper, turret: buildTurret, reactor: buildReactor, ship: buildShip };
+const BUILDERS = { grunt: buildGrunt, claw: buildClaw, hulk: buildHulk, sniper: buildSniper, turret: buildTurret, reactor: buildReactor };
 
 export function buildRobot(kind, rng) {
+  if (kind === 'ship') return buildPlayerShip();
   const g = new THREE.Group();
   const m = mats(rng);
   const refs = BUILDERS[kind](g, m, rng) || {};

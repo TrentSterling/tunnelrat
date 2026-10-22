@@ -168,6 +168,7 @@ function startDeathCinematic() {
   wreck = buildRobot('ship', makeRng(seed ^ 0xD00D)).group;
   wreck.position.copy(ship.object3d.position);
   wreck.quaternion.copy(ship.object3d.quaternion);
+  wreck.rotateY(Math.PI); // same +Z model to -Z flight convention as the chase ship
   scene.add(wreck);
   scene.attach(camRig); // detach into world space so it can retreat/orbit on its own
 
