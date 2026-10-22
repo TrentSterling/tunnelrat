@@ -9,7 +9,7 @@ import {createDensityField} from '../src/procgen/density.js';
 globalThis.document={createElement:()=>({getContext:()=>({fillRect(){}})})};
 const input={axis:{x:0,y:0,z:1,roll:0},mouseDX:0,mouseDY:0,boost:false};
 const results=[];
-for(const seed of [1337,1338,1339])for(const hz of [30,60,144]){
+for(const seed of [1337,1338,1339,83,91,107,165])for(const hz of [30,60,144]){
   const graph=generateLevelGraph(seed,CONFIG),field=createDensityField(graph,seed,CONFIG),scene=new THREE.Scene();
   const game=new GameState(scene,CONFIG),ship=new Ship(CONFIG,field);game.startLevel(graph,field,1);
   const normal=game.doorNormal.clone(),start=game.doorPos.clone().addScaledVector(normal,3);

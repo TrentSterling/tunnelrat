@@ -38,7 +38,6 @@
 // (automap does not need it). Deterministic prop placement (no rng needed).
 import * as THREE from 'three';
 import { buildSecurityFrame, buildEnergyField } from './architecture-model.js';
-import { frameSpec } from './procgen/architecture-layout.js';
 
 // module-scope scratch (no per-frame allocation in update()'s hot path)
 const _toShip = new THREE.Vector3();
@@ -116,11 +115,14 @@ export class GameState {
     this.doorNormal.subVectors(doorA.pos, doorB.pos).normalize();
     if (this.doorNormal.lengthSq() < 1e-6) this.doorNormal.set(0, 0, 1);
 
-    const spec = field.architecture?.find(s => s.kind === 'gate')
-      || frameSpec('gate', this.doorPos, this.doorNormal, this.config.built.tunnelRadius);
-    this.doorAssembly = buildSecurityFrame(spec);
-    this.scene.add(this.doorAssembly);
-    this.doorMesh = buildEnergyField(spec.inner, this.config.colors.door);
+    const spec = field.architecture?.find(s => s.kind === 'gate');
+    if (spec) {
+      this.doorPos.copy(spec.position); this.doorNormal.copy(spec.normal);
+      this.doorAssembly = buildSecurityFrame(spec); this.scene.add(this.doorAssembly);
+    }
+    // An exceptionally crowded graph may have no safe structural seat. Keep its
+    // original optical gate and mission plane; never add an unvalidated frame.
+    this.doorMesh = buildEnergyField(spec?.inner ?? this.config.built.tunnelRadius, this.config.colors.door);
     this.doorMesh.position.copy(this.doorPos);
     this.doorMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), this.doorNormal);
     this.scene.add(this.doorMesh);
@@ -156,7 +158,8 @@ export class GameState {
         this.doorMesh.material.opacity = 0.45 + Math.sin(this.time * 3) * 0.18;
       } else {
         this.doorFadeTimer -= dt;
-        this.doorAssembly.userData.setOpenFraction(1 - this.doorFadeTimer, this.doorMesh);
+        if (this.doorAssembly) this.doorAssembly.userData.setOpenFraction(1 - this.doorFadeTimer, this.doorMesh);
+        else this.doorMesh.material.opacity = Math.max(0, this.doorFadeTimer) * .55;
         if (this.doorFadeTimer <= 0) {
           this.scene.remove(this.doorMesh);
           this.doorMesh.geometry.dispose();

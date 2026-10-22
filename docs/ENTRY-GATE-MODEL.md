@@ -1,5 +1,10 @@
 # Entry and security-gate assembly stage
 
+Historical first-checkpoint report. Independent review rejected two defects:
+unchecked gate placement and coincident fastener caps. `ENTRY-CORRECTION.md`
+contains the current corrected construction, navigation guarantees, costs,
+test results and evidence status. Its measurements supersede those below.
+
 Base: deployed `dc6fcec4785f121bb88761b3dac368b2b11754d2`. This branch excludes
 roll checkpoint `d2722d49dcf44b4ca46fdcc56ce3ddedaded6f65`. Apply the per-asset
 checklist in `ASSET-ACCEPTANCE.md`. This is a local stage with inspected visual evidence, awaiting independent review, not a published environment change.

@@ -4,9 +4,9 @@ import * as THREE from 'three';
 
 export const SECTORS = 12;
 export const FRAME_SECTION = [
-  [0, -1.1], [.42, -1.1], [.48, -.98], [.9, -.98],
+  [0, -1.1], [.08, -1.1], [.11, -1], [.35, -1], [.38, -1.1], [.42, -1.1], [.48, -.98], [.9, -.98],
   [.96, -1.1], [1.05, -1.1], [1.45, -.8], [1.45, .8],
-  [1.05, 1.1], [.96, 1.1], [.9, .98], [.48, .98], [.42, 1.1], [0, 1.1],
+  [1.05, 1.1], [.96, 1.1], [.9, .98], [.48, .98], [.42, 1.1], [.38, 1.1], [.35, 1], [.11, 1], [.08, 1.1], [0, 1.1],
 ];
 const normals = Array.from({ length: SECTORS }, (_, i) => [Math.cos(i * Math.PI / 6), Math.sin(i * Math.PI / 6)]);
 const Z = new THREE.Vector3(0, 0, 1);
@@ -27,14 +27,22 @@ export function frameSpec(kind, position, normal, inner, edge) {
 export function planArchitecture(graph, decor, config) {
   const rooms = new Map(graph.nodes.map(n => [n.id, n]));
   const a = rooms.get(graph.lockedEdge.a), b = rooms.get(graph.lockedEdge.b);
-  const gate = frameSpec('gate', a.pos.clone().add(b.pos).multiplyScalar(.5),
-    a.pos.clone().sub(b.pos).normalize(), config.built.tunnelRadius, graph.lockedEdge);
-  const result = [gate];
+  const normal = a.pos.clone().sub(b.pos).normalize(), length = a.pos.distanceTo(b.pos), result = [];
+  // A locked corridor can pass another corridor near its midpoint. Search along
+  // its unchanged straight carve, nearest midpoint first. Collision and gameplay
+  // consume this exact pose. Never install an unchecked fallback solid.
+  for (let step = 0; step <= Math.ceil(length); step++) {
+    const offset = step === 0 ? 0 : Math.ceil(step / 2) * (step % 2 ? 1 : -1);
+    const t = .5 + offset / length;
+    if (t <= 0 || t >= 1) continue;
+    const spec = frameSpec('gate', a.pos.clone().lerp(b.pos, t), normal, config.built.tunnelRadius, graph.lockedEdge);
+    if (preservesPaths(spec, decor.edges, config.ship.radius)) { result.push(spec); break; }
+  }
   const edges = decor.edges.filter(e => e.style === 'built' && !e.locked).sort((a, b) =>
     Number(b.a === graph.spawnId || b.b === graph.spawnId) - Number(a.a === graph.spawnId || a.b === graph.spawnId));
   for (const edge of edges) {
     for (const id of [edge.a, edge.b]) {
-      if (result.length >= 7) break;
+      if (result.filter(s => s.kind === 'entry').length >= 6) break;
       const room = rooms.get(id), pts = id === edge.a ? edge.polyline : [...edge.polyline].reverse();
       // The opening contains even the original maximum mouth flare, not just the
       // nominal corridor radius. No metal narrows that existing circular carve.
@@ -47,13 +55,42 @@ export function planArchitecture(graph, decor, config) {
         // corridor centerlines. The unmodified graph remains the navigation graph.
         const occupied = result.some(s => s.position.distanceTo(p) < s.recessRadius + spec.recessRadius + 2)
           || graph.nodes.some(n => n.id !== id && n.pos.distanceTo(p) < n.radius + spec.recessRadius)
-          || decor.edges.some(e => e !== edge && e.polyline.some(q => q.distanceTo(p) < spec.recessRadius + e.radius + 2));
-        if (!occupied) result.push(spec);
+          || decor.edges.some(e => e !== edge && e.polyline.slice(1).some((q, j) => segmentDistance(p, e.polyline[j], q) < spec.recessRadius + e.radius + 2));
+        if (!occupied && preservesPaths(spec, decor.edges, config.ship.radius)) result.push(spec);
         break;
       }
     }
   }
   return result;
+}
+
+export function segmentDistance(p, a, b) {
+  const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
+  const lengthSq = dx * dx + dy * dy + dz * dz;
+  const t = lengthSq ? Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy + (p.z - a.z) * dz) / lengthSq)) : 0;
+  return Math.hypot(p.x - a.x - t * dx, p.y - a.y - t * dy, p.z - a.z - t * dz);
+}
+
+export function preservesPaths(spec, edges, radius) {
+  const local = [0, 0, 0];
+  for (const edge of edges) for (let j = 1; j < edge.polyline.length; j++) {
+    const a = edge.polyline[j - 1], b = edge.polyline[j];
+    if (segmentDistance(spec.position, a, b) > spec.recessRadius + radius + .2) continue;
+    const length = a.distanceTo(b), count = Math.max(1, Math.ceil(length / .25));
+    // A filled annular envelope contains every physical part. Its distance is
+    // 1-Lipschitz: the half-interval margin certifies the whole continuous
+    // centerline capsule, including points between these samples.
+    const clearance = radius + length / count / 2 + .001;
+    for (let k = 0; k <= count; k++) {
+      const t = k / count;
+      frameLocal(spec, a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t, local);
+      const radial = Math.abs(apothem(local[0], local[1]) - spec.inner - .725) - .725;
+      const axial = Math.abs(local[2]) - 1.1;
+      const distance = Math.hypot(Math.max(radial, 0), Math.max(axial, 0)) + Math.min(Math.max(radial, axial), 0);
+      if (distance < clearance) return false;
+    }
+  }
+  return true;
 }
 
 export function frameLocal(spec, x, y, z, out) {
@@ -80,6 +117,14 @@ export function frameSolid(x, y, z, inner, includeHardware = true) {
   // Match the shallow gasket and emitter pockets as well as the structural
   // section. Their outside faces never extend beyond the flange's +/-1.1 m.
   const box = (a, b, c) => -(Math.hypot(Math.max(a, 0), Math.max(b, 0), Math.max(c, 0)) + Math.min(Math.max(a, b, c), 0));
+  if (includeHardware && Math.abs(z) > .98 && r > .1 && r < .36) {
+    for (const [nx, ny] of normals) {
+      const bx = x - nx * (inner + .23), by = y - ny * (inner + .23);
+      let hex = -Infinity;
+      for (let j = 0; j < SECTORS; j += 2) hex = Math.max(hex, bx * normals[j][0] + by * normals[j][1]);
+      solid = Math.max(solid, box(hex - .105 * Math.cos(Math.PI / 6), Math.abs(Math.abs(z) - 1.035) - .035, -1));
+    }
+  }
   if (includeHardware && Math.abs(z) > .9 && r > .4 && r < 1) {
     solid = Math.max(solid, box(Math.abs(r - .69) - .16, Math.abs(Math.abs(z) - .9975) - .0175, -1));
     for (let i = 0; i < SECTORS; i += 2) {

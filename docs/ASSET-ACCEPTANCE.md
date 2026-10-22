@@ -54,6 +54,12 @@ does not support the requested Unix extended attributes.
 
 ## Current asset review ledger
 
+Environment checkpoint `228dab3` was rejected for gate placement and coplanar
+fastener caps. The local correction is described in `ENTRY-CORRECTION.md` and
+awaits independent re-review. The table below records the original asset design;
+its old navigation/material passes were insufficient and are superseded by the
+203-layout / 200-seed continuous-path and modeled-seat acceptance results.
+
 | Asset | Status | Evidence |
 | --- | --- | --- |
 | Player interceptor | Independently approved at `0a5b66f` | `SHIP-MODEL-PASS.md`; outward housings, fixed multi-view references, collider envelope and gameplay |

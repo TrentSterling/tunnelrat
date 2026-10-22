@@ -47,7 +47,7 @@ for (const inner of [5.2, 7.8]) {
     check(volume > 0, 'positive signed shell volume'); triangles += pos.count / 3;
     report.meshes.push({ inner, name, triangles: pos.count / 3, volume });
   }
-  check(triangles <= 1600, '1488 triangle budget');
+  check(triangles === 1680, '1680 triangles including modeled fastener seats');
   // FrontSide ray tests against each outer and inner planar side, plus both faces.
   const mesh = new THREE.Mesh(geometries['load-bearing-shell'], new THREE.MeshBasicMaterial());
   mesh.updateMatrixWorld(true);
@@ -60,7 +60,11 @@ for (const inner of [5.2, 7.8]) {
   }
   for (const side of [-1, 1]) {
     const hits = new THREE.Raycaster(new THREE.Vector3(inner + .2, 0, side * 3), new THREE.Vector3(0, 0, -side)).intersectObject(mesh);
-    check(hits.length > 0 && Math.abs(hits[0].distance - 1.9) < 1e-4, 'front and rear FrontSide rays');
+    check(hits.length > 0 && Math.abs(hits[0].distance - 2) < 1e-4, 'front and rear recessed seat rays');
+    const heads = new THREE.Mesh(geometries['liner-and-fasteners'], new THREE.MeshBasicMaterial()); heads.updateMatrixWorld(true);
+    const caps = new THREE.Raycaster(new THREE.Vector3(inner + .23, 0, side * 3), new THREE.Vector3(0, 0, -side)).intersectObject(heads);
+    check(caps.length > 0 && Math.abs(caps[0].distance - 1.93) < 1e-4, 'head cap has 7 cm seat depth and 3 cm flange separation');
+    heads.material.dispose();
   }
   Object.values(geometries).forEach(g => g.dispose()); mesh.material.dispose();
 }
@@ -82,13 +86,14 @@ for (let side = 0; side < 12; side++) for (const roll of [0, Math.PI / 2, Math.P
 report.minimumTransformedGap = minimumTransformedGap;
 airframe.traverse(o => o.geometry?.dispose());
 const input = { axis: { x: 0, y: 0, z: 1, roll: 0 }, boost: false, mouseDX: 0, mouseDY: 0 };
-for (const seed of [1337, 1338, 1339, ...Array.from({ length: 30 }, (_, i) => i + 1)]) {
+for (const seed of [1337, 1338, 1339, ...Array.from({ length: 200 }, (_, i) => i + 1)]) {
   const graph = generateLevelGraph(seed, CONFIG), before = originalField(graph, seed, CONFIG);
   const started = performance.now(), field = createDensityField(graph, seed, CONFIG);
   const constructionMs = performance.now() - started;
   const repeated = createDensityField(graph, seed, CONFIG);
   check(JSON.stringify(field.architecture) === JSON.stringify(repeated.architecture), 'deterministic layout');
   check(field.architecture.length <= 7, 'bounded assembly count');
+  check(field.architecture.some(s => s.kind === 'gate'), `modeled gate retained in swept seed ${seed}`);
   let minCenter = Infinity, maxLostClearance = 0;
   for (const e of field.decor.edges) for (let i = 1; i < e.polyline.length; i++) for (let t = 0; t <= 1; t += .125) {
     p.lerpVectors(e.polyline[i - 1], e.polyline[i], t);

@@ -65,10 +65,11 @@ export function frameGeometries(inner, gate = false) {
   for (let i = 0; i < SECTORS; i++) {
     const a = i * Math.PI / 6, x = Math.cos(a), y = Math.sin(a);
     for (const side of [-1, 1]) {
-      // Flush fastener heads sit in the broad flange. They do not protrude beyond
-      // the structural 2.2 m depth or project into the clear opening.
+      // Heads seat on the 1.00 m recess floor. Their exposed caps are at 1.07 m,
+      // 3 cm below the flange, with chamfered walls and visible clearance around
+      // each head. Both faces remain inside the original 2.2 m envelope.
       const bolt = new THREE.CylinderGeometry(.105, .105, .07, 6);
-      lining.add(bolt, 0xb3b9b6, transform(x * (inner + .23), y * (inner + .23), side * 1.065, Math.PI / 2));
+      lining.add(bolt, 0xb3b9b6, transform(x * (inner + .23), y * (inner + .23), side * 1.035, Math.PI / 2));
       // Three repeated status pockets on each face. Gate pockets are paired field
       // electrodes; entries use steady amber clearance lamps, without animation.
       if (i % 2 === 0) {
