@@ -37,6 +37,7 @@ class Batch {
 }
 
 function skin(rings){
+  // Stations advance along +Z; each ring must be clockwise viewed from +Z.
   const p=[],n=rings[0].length;
   const tri=(a,b,c)=>p.push(...a,...b,...c);
   for(let j=0;j<rings.length-1;j++)for(let i=0;i<n;i++){
@@ -99,7 +100,7 @@ export function buildPlayerShip(){
     // smaller luminous core even when the headlamp is close to the hull.
     const engine=skin([[-.98,.235],[-.72,.28],[-.40,.19]].map(([z,r])=>Array.from({length:8},(_,i)=>{
       const a=i*Math.PI/4;return [Math.cos(a)*r+side*.53,Math.sin(a)*r-.035,z];
-    })));
+    }).reverse())); // Match skin's clockwise ring contract, including both caps.
     armor.add(engine,edge);
     armor.add(driveCollar(),dark,transform(side*.53,-.035,0));
     drive.add(new THREE.CylinderGeometry(.125,.125,.008,8),0xffffff,transform(side*.53,-.035,-.995,Math.PI/2));
