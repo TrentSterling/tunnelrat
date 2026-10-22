@@ -42,6 +42,7 @@
 import * as THREE from 'three';
 import { makeRng, randRange, randInt } from '../util/rng.js';
 import { grungeTexture } from '../util/grungetex.js';
+import { frameLocal } from './architecture-layout.js';
 
 // ---------- module-scope shared materials ----------
 
@@ -146,6 +147,7 @@ export function buildProps(field, graph, config, biome, seed) {
     stal: [], crystal: [], crate: [], barrel: [],
     post: [], bulb: [], pipe: [], pipeThin: [], ember: [],
   };
+  const architectureLocal = [0, 0, 0];
 
   // ---------- placement helpers (closures over field/rng/lists) ----------
 
@@ -416,6 +418,13 @@ export function buildProps(field, graph, config, biome, seed) {
       _segDir.multiplyScalar(1 / len);
       _pt.lerpVectors(a, b, 0.5);
       if (_pt.distanceTo(roomA.pos) < clearA || _pt.distanceTo(roomB.pos) < clearB) continue;
+      // The socket is wider than the old pipe attachment radius. Do not leave a
+      // suspended pipe through its opening; retain RNG draws and other segments.
+      if ((field.architecture || []).some(s => {
+        frameLocal(s, _pt.x, _pt.y, _pt.z, architectureLocal);
+        return Math.abs(architectureLocal[2]) < 9.1 + len / 2
+          && Math.hypot(architectureLocal[0], architectureLocal[1]) < s.recessRadius + len / 2;
+      })) continue;
       const upRef = Math.abs(_segDir.y) > 0.95 ? _X : _Y;
       _side.crossVectors(_segDir, upRef).normalize();
       _upv.crossVectors(_side, _segDir).normalize();

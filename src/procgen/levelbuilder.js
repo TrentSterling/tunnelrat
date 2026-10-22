@@ -116,7 +116,7 @@ export function buildLevel(seed, config, depth, onProgress) {
           bounds.min.z + cz * chunkSize,
         );
 
-        const result = polygonize(field, chunkMin, chunkSize, res);
+        const result = polygonize(field.renderField || field, chunkMin, chunkSize, res);
         if (result) {
           const vertexCount = result.positions.length / 3;
           const colors = new Float32Array(vertexCount * 3);
