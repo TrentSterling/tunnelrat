@@ -1,5 +1,10 @@
 # Elapsed-time 6DOF flight integration
 
+Historical first-checkpoint report. Independent review rejected its contact
+behavior. Current implementation, acceptance results, snapshot contract and
+capture restrictions are in `ROLL-CONTACT-CORRECTION.md`; they supersede the
+no-accumulator, per-frame damage and capture statements below.
+
 This local checkpoint is based on the independently approved ship model at
 `0a5b66fbc1c8e6c5a900b03d06f29c1b17f6fd61`. The model candidate remains in its
 own checkout and branch. Only `src/ship.js` changes runtime behavior here;

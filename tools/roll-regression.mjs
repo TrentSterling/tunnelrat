@@ -77,13 +77,28 @@ for(const [name,result] of Object.entries(summary)){
 assert(summary.strafe.legacy60Position<1e-8,'uncapped straight flight retains exact 60 Hz path');
 assert(summary.roll.legacy60Angle<.00005,'roll/release retains the 60 Hz angular response');
 
-// No hidden clock/accumulator: a public flight-state snapshot continues exactly.
+// JSON snapshots include the unfinished simulation tick as well as public state.
 const first=new Ship(CONFIG,null);first.update(.137,control(plans.combined,0,.137));
-const saved=JSON.parse(JSON.stringify(pose(first))),restored=new Ship(CONFIG,null);
-restored.object3d.position.fromArray(saved.position);restored.object3d.quaternion.fromArray(saved.quaternion);
-restored.velocity.fromArray(saved.velocity);for(const key of ['rollVel','shields','energy','alive'])restored[key]=saved[key];
+const saved=JSON.parse(JSON.stringify(first.captureFlightState())),restored=new Ship(CONFIG,null);
+restored.restoreFlightState(saved);
 for(const dt of jitter){first.update(dt,control(plans.combined,0,dt));restored.update(dt,control(plans.combined,0,dt));}
 assert.deepEqual(pose(first),pose(restored),'snapshot continuation');
+assert.deepEqual(first.captureFlightState(),restored.captureFlightState(),'pending tick also resumes exactly');
+// Save while a partial-tick preview touches a wall: restoring must neither lose
+// nor double-count that contact when the next complete tick is committed.
+const plane={sample:x=>x,collisionNormal:(x,y,z,out)=>out.set(-1,0,0)};
+const contacting=new Ship(CONFIG,plane);contacting.reset(new THREE.Vector3(-1.45,0,0),new THREE.Quaternion());contacting.velocity.set(25,0,0);
+contacting.update(.003,zero());const contactCopy=new Ship(CONFIG,plane);
+contactCopy.restoreFlightState(JSON.parse(JSON.stringify(contacting.captureFlightState())));
+for(const dt of jitter){contacting.update(dt,zero());contactCopy.update(dt,zero());assert.deepEqual(contacting.captureFlightState(),contactCopy.captureFlightState(),'contact snapshot continuation');}
+// Public writers are part of the existing game contract. A preview must never
+// restore over knockback, a door push, teleport, field swap or external roll.
+for(const edit of [s=>s.velocity.add(new THREE.Vector3(3,2,-1)),s=>s.object3d.position.add(new THREE.Vector3(30,20,10)),
+ s=>s.object3d.rotateX(.7),s=>s.rollVel=.4,s=>s.noclip=true,s=>s.field={sample:()=>-999,collisionNormal:(x,y,z,o)=>o.set(1,0,0)}]){
+ const changed=new Ship(CONFIG,null);changed.update(.013,control(plans.combined,0,.013));edit(changed);
+ const fresh=new Ship(CONFIG,changed.field);fresh.restoreFlightState({...changed.captureFlightState(),integration:null});
+ changed.update(.019,zero());fresh.update(.019,zero());assert.deepEqual(pose(changed),pose(fresh),'public mutation rebases pending tick');
+}
 const frozen=pose(first);for(let i=0;i<30;i++)first.update(0,{...control(plans.combined,0,0),mouseDX:20,mouseDY:10});
 assert.deepEqual(pose(first),frozen,'zero-time pause consumes no motion or mouse input');
 first.takeDamage(9999);const dead=pose(first);first.update(.05,control(plans.combined,0,.05));assert.deepEqual(pose(first),dead,'dead flight remains frozen');

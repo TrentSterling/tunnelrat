@@ -31,16 +31,17 @@
 //   scaled by config.ship.thrust (* boostMult when input.boost), rotated to world,
 //   added to velocity. Damping and displacement extend the original 60 Hz response
 //   over elapsed time. Clamp speed to maxSpeed (boost raises cap by boostMult).
-//   Rotation, thrust and sphere collision use bounded steps of at most 1/240 s.
+//   Rotation, thrust and sphere collision use fixed 1/240 s steps, with an
+//   immediate partial-tick pose preview for rendering and externally writable state.
 //   Energy regen: energyRegen * dt up to max.
 //
 // Collision (SDF sphere, robust at 34 m/s vs voxelSize 1.6):
-//   After integration, do up to 3 resolution iterations:
+//   After integration, do up to 12 resolution iterations:
 //     d = field.sample(pos); if d > -config.ship.radius (wall closer than radius):
 //       n = field.collisionNormal(pos); push pos along n by (d + radius) (i.e. out of
 //       the wall); remove velocity component INTO the wall: v -= n * min(0, v.dot(n))
 //       * (1 + bounce). Track pre-resolve normal speed; if > 6 call onImpact(speed)
-//       once per frame and apply impact damage: takeDamage((speed-6) * 0.8).
+//       at most once per outer update. Damage is accounted once per fixed tick.
 //   Also substep: if |v|*dt > radius, split the integration into ceil(|v|*dt/radius)
 //   substeps, resolving each. Never tunnel through walls at max speed.
 import * as THREE from 'three';
@@ -57,6 +58,20 @@ const _thrustWorld = new THREE.Vector3();
 const _motionVelocity = new THREE.Vector3();
 const _normal = new THREE.Vector3();
 const _muzzleLocal = new THREE.Vector3();
+const TICK = 1 / 240;
+const motionState = () => ({ position: new THREE.Vector3(), quaternion: new THREE.Quaternion(), velocity: new THREE.Vector3(), rollVel: 0 });
+function readMotion(ship, state) {
+  state.position.copy(ship.object3d.position); state.quaternion.copy(ship.object3d.quaternion);
+  state.velocity.copy(ship.velocity); state.rollVel = ship.rollVel;
+}
+function writeMotion(ship, state) {
+  ship.object3d.position.copy(state.position); ship.object3d.quaternion.copy(state.quaternion);
+  ship.velocity.copy(state.velocity); ship.rollVel = state.rollVel;
+}
+function commitImpact(ship, speed) {
+  ship._frameImpact = Math.max(ship._frameImpact, speed);
+  if (speed > 6) ship.takeDamage((speed - 6) * .8);
+}
 
 export class Ship {
   constructor(config, field) {
@@ -70,6 +85,10 @@ export class Ship {
     this.alive = true;
     this.noclip = false; // cheat console; not reset by reset() so it survives retries/level loads
     this.onImpact = null;
+    this._anchor = motionState(); this._published = motionState();
+    this._pending = { time: 0, x: 0, y: 0, z: 0, roll: 0, mouseDX: 0, mouseDY: 0, boost: false };
+    this._tickInput = { axis: { x: 0, y: 0, z: 0, roll: 0 }, mouseDX: 0, mouseDY: 0, boost: false, thrustScale: 1 };
+    this._clockReady = false; this._previewImpact = 0;
   }
 
   reset(pos, quat) {
@@ -80,6 +99,7 @@ export class Ship {
     this.shields = this.config.ship.shields;
     this.energy = this.config.ship.energy;
     this.alive = true;
+    this._clockReady = false;
   }
 
   forward(out) {
@@ -114,15 +134,79 @@ export class Ship {
 
   update(dt, input) {
     if (!this.alive || !(dt > 0) || !Number.isFinite(dt)) return;
-    // Bounded coupled rotation/thrust/collision steps, with no accumulator or
-    // delayed input. Mouse deltas are pixels per frame; distribute them once.
-    const steps = Math.max(1, Math.ceil(dt * 240 - 1e-10));
-    let impact = 0;
-    for (let i = 0; i < steps; i++) impact = Math.max(impact, this._step(dt / steps, input, 1 / steps));
-    if (impact > 6) {
-      if (this.onImpact) this.onImpact(impact);
-      this.takeDamage((impact - 6) * 0.8);
+    const p = this._pending, last = this._published;
+    this._frameImpact = 0;
+    // GameState doors, weapon impulses, cheats and level swaps can write the
+    // public pose/velocity. Rebase from that result, never restore over it.
+    const edited = !last.position.equals(this.object3d.position) || !last.quaternion.equals(this.object3d.quaternion)
+      || !last.velocity.equals(this.velocity) || last.rollVel !== this.rollVel
+      || this._clockField !== this.field || this._clockNoclip !== this.noclip;
+    if (!this._clockReady || edited) {
+      if (this._clockReady) commitImpact(this, this._previewImpact);
+      readMotion(this, this._anchor); this._clearPending(); this._clockReady = true;
     }
+    writeMotion(this, this._anchor);
+    let remaining = dt;
+    while (remaining > 1e-12 && this.alive) {
+      const chunk = Math.min(remaining, TICK - p.time), fraction = chunk / dt;
+      const thrustScale = input.boost ? this.config.ship.boostMult : 1;
+      p.x += input.axis.x * thrustScale * chunk; p.y += input.axis.y * thrustScale * chunk;
+      p.z += input.axis.z * thrustScale * chunk; p.roll += input.axis.roll * chunk;
+      p.mouseDX += input.mouseDX * fraction; p.mouseDY += input.mouseDY * fraction;
+      p.boost ||= !!input.boost; p.time += chunk; remaining -= chunk;
+      if (p.time >= TICK - 1e-12) {
+        commitImpact(this, this._step(TICK, this._pendingInput(), 1));
+        readMotion(this, this._anchor); this._clearPending();
+      }
+    }
+    // Evaluate the unfinished tick for a fresh camera/aim pose. It is recomputed
+    // from its anchor next frame, so render boundaries never become contact steps.
+    // Preview contacts do not deal damage; completed ticks account for each impact
+    // exactly once. The callback retains the maximum speed once per outer update.
+    this._previewImpact = p.time > 1e-12 && this.alive ? this._step(p.time, this._pendingInput(), 1) : 0;
+    this.energy = Math.min(this.config.ship.energy, this.energy + this.config.ship.energyRegen * dt);
+    readMotion(this, this._published); this._clockField = this.field; this._clockNoclip = this.noclip;
+    if (this._frameImpact > 6 && this.onImpact) this.onImpact(this._frameImpact);
+  }
+
+  _clearPending() {
+    const p = this._pending;
+    p.time = p.x = p.y = p.z = p.roll = p.mouseDX = p.mouseDY = 0; p.boost = false;
+    this._previewImpact = 0;
+  }
+
+  _pendingInput() {
+    const p = this._pending, input = this._tickInput;
+    input.axis.x = p.x / p.time; input.axis.y = p.y / p.time;
+    input.axis.z = p.z / p.time; input.axis.roll = p.roll / p.time;
+    input.mouseDX = p.mouseDX; input.mouseDY = p.mouseDY; input.boost = p.boost;
+    return input;
+  }
+
+  // No game persistence exists yet. This explicit JSON-safe flight snapshot also
+  // preserves the unfinished tick, rather than silently dropping its history.
+  captureFlightState() {
+    const encode = s => ({ position: s.position.toArray(), quaternion: s.quaternion.toArray(), velocity: s.velocity.toArray(), rollVel: s.rollVel });
+    const current = motionState(); readMotion(this, current);
+    return { ...encode(current), shields: this.shields, energy: this.energy, alive: this.alive, noclip: this.noclip,
+      integration: { ready: this._clockReady, anchor: encode(this._anchor), published: encode(this._published),
+        pending: { ...this._pending }, previewImpact: this._previewImpact } };
+  }
+
+  restoreFlightState(state) {
+    const decode = (value, target) => {
+      target.position.fromArray(value.position); target.quaternion.fromArray(value.quaternion);
+      target.velocity.fromArray(value.velocity); target.rollVel = value.rollVel;
+    };
+    decode(state, this._published); writeMotion(this, this._published);
+    for (const key of ['shields', 'energy', 'alive', 'noclip']) this[key] = state[key];
+    const tick = state.integration;
+    this._clockReady = !!tick?.ready;
+    if (tick) {
+      decode(tick.anchor, this._anchor); decode(tick.published, this._published);
+      Object.assign(this._pending, tick.pending); this._previewImpact = tick.previewImpact;
+    }
+    this._clockField = this.field; this._clockNoclip = this.noclip;
   }
 
   _step(dt, input, mouseFraction) {
@@ -166,7 +250,7 @@ export class Ship {
 
     // --- thrust: local axis vector, rotated to world, added as acceleration ---
     const boosting = !!input.boost;
-    const thrustMag = cfg.thrust * (boosting ? cfg.boostMult : 1);
+    const thrustMag = cfg.thrust * (input.thrustScale ?? (boosting ? cfg.boostMult : 1));
     _thrustLocal.set(input.axis.x, input.axis.y, -input.axis.z);
     _thrustWorld.copy(_thrustLocal).applyQuaternion(q).multiplyScalar(thrustMag);
     // The same elapsed-time response for translation. For constant thrust,
@@ -197,9 +281,6 @@ export class Ship {
       _motionVelocity.copy(this.velocity);
     }
 
-    // --- energy regen ---
-    this.energy = Math.min(cfg.energy, this.energy + cfg.energyRegen * dt);
-
     // --- integrate position with substepped SDF collision ---
     return this._integrateAndCollide(dt, _motionVelocity);
   }
@@ -222,7 +303,7 @@ export class Ship {
     for (let s = 0; s < substeps; s++) {
       this.object3d.position.addScaledVector(motion, subDt);
 
-      for (let i = 0; i < 3; i++) {
+      for (let i = 0; i < 12; i++) {
         const p = this.object3d.position;
         const d = field.sample(p.x, p.y, p.z);
         if (d <= -cfg.radius) break;
