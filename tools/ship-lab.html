@@ -1,0 +1,20 @@
+<!doctype html><meta charset="utf-8"><title>TUNNELRAT ship reference</title>
+<style>body{margin:0;background:#10161d;color:#cad4da;font:13px monospace}canvas{display:block}header{position:absolute;top:16px;left:24px;letter-spacing:3px}label{position:absolute;color:#82929c;letter-spacing:2px}#a{top:54px;left:24px}#b{top:54px;left:664px}#c{top:392px;left:24px}#d{top:392px;left:664px}footer{position:absolute;bottom:12px;left:24px;color:#82929c}</style>
+<header>TUNNELRAT / SHIP GEOMETRY REFERENCE</header><label id="a">TOP / +Z FORWARD</label><label id="b">SIDE</label><label id="c">FRONT</label><label id="d">CHASE QUARTER</label><footer>Same orthographic scale, lights and camera for every revision. Units: metres.</footer>
+<script type="importmap">{"imports":{"three":"https://esm.sh/three@0.179.0"}}</script>
+<script type="module">
+import * as THREE from 'three';
+import {buildRobot} from '../src/robots.js';
+import {makeRng} from '../src/util/rng.js';
+const renderer=new THREE.WebGLRenderer({antialias:true});renderer.setSize(1280,720);renderer.setPixelRatio(1);renderer.toneMapping=THREE.ACESFilmicToneMapping;document.body.append(renderer.domElement);
+const scene=new THREE.Scene();scene.background=new THREE.Color(0x10161d);
+scene.add(new THREE.HemisphereLight(0xc6e3f5,0x4b3c2d,2.0));
+for(const [pos,color,intensity] of [[[3,6,5],0xffffff,2.8],[[-4,2,-3],0x82b9df,2]]){const l=new THREE.DirectionalLight(color,intensity);l.position.set(...pos);scene.add(l);}
+const {group,refs}=buildRobot('ship',makeRng(1337 ^ 0x5451));scene.add(group);group.updateMatrixWorld(true);
+let triangles=0,meshes=0,maxRadius=0;const bounds=new THREE.Box3(),p=new THREE.Vector3();
+group.traverse(o=>{if(!o.isMesh)return;meshes++;triangles+=(o.geometry.index?.count||o.geometry.attributes.position.count)/3;const a=o.geometry.attributes.position;for(let i=0;i<a.count;i++){p.fromBufferAttribute(a,i).applyMatrix4(o.matrixWorld);maxRadius=Math.max(maxRadius,p.length());bounds.expandByPoint(p);}});
+const report={triangles,meshes,maxRadius,bounds:{min:bounds.min.toArray(),max:bounds.max.toArray(),size:bounds.getSize(new THREE.Vector3()).toArray()}};
+const views=[{pos:[0,6,0],up:[0,0,1]},{pos:[6,0,0],up:[0,1,0]},{pos:[0,0,6],up:[0,1,0]},{pos:[3.6,2.3,-5],up:[0,1,0]}];
+function render(){renderer.setScissorTest(true);for(let i=0;i<4;i++){const camera=new THREE.OrthographicCamera(-4.1657,4.1657,2.2,-2.2,0.1,40);camera.position.set(...views[i].pos);camera.up.set(...views[i].up);camera.lookAt(0,0,0);renderer.setViewport(i%2*640,i<2?360:22,640,338);renderer.setScissor(i%2*640,i<2?360:22,640,338);renderer.render(scene,camera);}}
+render();window.LAB={report,group,refs,render,ready:true};
+</script>
