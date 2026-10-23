@@ -1,5 +1,10 @@
 # Camera review corrections
 
+Re-review confirmed the two fixes below but rejected `5aba228c` for unnecessary
+gate retraction caused by applying the rock allowance to authored frames.
+See `CHASE-CAMERA-GATE-CORRECTION.md` for the bounded follow-up. This page
+retains the previous stage's measurements and is not a publication approval.
+
 Follow-up to rejected camera commit
 `9b55e4a8c43d9278d4ca703d04125f5964853ab0`. The independently reviewed release
 `ff9f90ed3b6a9e19a4a7247933195f7acd6eee39` remains immutable and unpublished.

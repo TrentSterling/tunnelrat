@@ -12,7 +12,9 @@ const ROCK_RENDER_MARGIN = .55;
 
 export class ChaseCamera {
   constructor(field, roots = []) {
-    this.field = field;
+    // Rock gets a marching-cubes allowance. Authored frames in roots already
+    // have exact triangle constraints and must not receive that extra margin.
+    this.field = field.renderField || field;
     this.obstacles = [];
     const instance = new THREE.Matrix4();
     for (const root of roots.filter(Boolean)) {
