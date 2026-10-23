@@ -26,6 +26,21 @@ async function waitForGame(page) {
 }
 async function resumedPlay(page) {
   await waitForGame(page);
+  if(repository==='tunnelrat') {
+    // TUNNELRAT's current test authorization excludes pointer lock and audio
+    // tests. Exercise the real keyboard listener inside this isolated muted
+    // headless page, without acquiring a pointer or inspecting audio state.
+    assert.equal(await page.evaluate(()=>!!document.pointerLockElement),false);
+    const before=await page.evaluate(()=>TR.ship.object3d.position.toArray());
+    await page.evaluate(()=>window.dispatchEvent(new KeyboardEvent('keydown',{code:'KeyW',key:'w',bubbles:true})));
+    await page.waitForTimeout(400);
+    await page.evaluate(()=>window.dispatchEvent(new KeyboardEvent('keyup',{code:'KeyW',key:'w',bubbles:true})));
+    const after=await page.evaluate(()=>TR.ship.object3d.position.toArray());
+    assert.notDeepEqual(after,before,'flight resumes after closing About');
+    assert.equal(await page.evaluate(()=>!!document.pointerLockElement),false);
+    await page.screenshot({path:path.join(output,`${repository}-resumed-game.png`)});
+    return {input:'page-local synthetic keys; flight resumed',pointer:'never acquired',fullscreen:'not tested',audio:'not tested'};
+  }
   if(repository==='gemstogether') {
     const move=await page.evaluate(()=>__jewel.state().legalMoves[0]);
     const points=await page.evaluate(m=>m.map(i=>__jewel.project(i)),move);
@@ -101,7 +116,10 @@ const server = http.createServer((req,res)=>{
   try {
     for(const mode of ['desktop','reduced-motion','save-data','touch']) {
       const context = await browser.newContext({viewport:mode==='touch'?{width:390,height:844}:{width:1280,height:800},hasTouch:mode==='touch',isMobile:mode==='touch',reducedMotion:mode==='reduced-motion'?'reduce':'no-preference'});
-      await context.addInitScript(()=>{
+      if(repository==='tunnelrat') await context.addInitScript(()=>{
+        navigator.getGamepads=()=>[];
+      });
+      else await context.addInitScript(()=>{
         window.__aboutAudioContexts=[];
         for(const name of ['AudioContext','webkitAudioContext'])if(window[name]){
           const Original=window[name];
