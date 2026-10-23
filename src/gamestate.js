@@ -12,12 +12,9 @@
 //
 //   startLevel(graph, field, depth)  // builds objective props into scene:
 //     // KEY: spinning gold octahedron + point light at key node center (bob slowly)
-//     // DOOR: glowing red disc/hex barrier mesh centered on the locked edge's tunnel:
-//     //   position = midpoint of lockedEdge node positions projected: use the point on
-//     //   the edge polyline nearest the reactor-side node minus 6m... SIMPLE RULE:
-//     //   place at the locked edge midpoint, oriented so its plane normal = edge
-//     //   direction (a.pos - b.pos normalized). Radius config.game.doorRadius. Double
-//     //   sided, pulsing emissive, slow spin.
+//     // DOOR: modeled fixed emitter at the locked-edge midpoint, normal along
+//     //   (a.pos - b.pos). Its two-sided optical field fits the twelve-sided opening.
+//     //   Existing doorRadius remains the mission's blocking/unlock radius.
 //     // EXIT: cyan beacon (cone + light) at exit node, dim until 'escape' phase then bright + strobe.
 //   update(dt, ship) -> events: array of strings emitted THIS frame, any of:
 //     'keyPickup' | 'doorOpen' | 'doorBlocked' | 'escapeStart' | 'escaped' | 'died' | 'timeUp'
@@ -40,6 +37,7 @@
 // Keep all THREE objects internal; expose doorMesh position readonly if trivially easy
 // (automap does not need it). Deterministic prop placement (no rng needed).
 import * as THREE from 'three';
+import { buildSecurityFrame, buildEnergyField } from './architecture-model.js';
 
 // module-scope scratch (no per-frame allocation in update()'s hot path)
 const _toShip = new THREE.Vector3();
@@ -64,6 +62,7 @@ export class GameState {
 
     // door
     this.doorMesh = null;
+    this.doorAssembly = null;
     this.doorLocked = true;
     this.doorPos = new THREE.Vector3();
     this.doorNormal = new THREE.Vector3(0, 0, 1);
@@ -111,16 +110,19 @@ export class GameState {
     this.keyLight.position.copy(this.keyBasePos);
     this.scene.add(this.keyLight);
 
-    // ---- DOOR: hex disc barrier centered on the locked edge, normal = edge direction ----
+    // ---- DOOR: fixed emitter assembly and optical field, normal = edge direction ----
     this.doorPos.addVectors(doorA.pos, doorB.pos).multiplyScalar(0.5);
     this.doorNormal.subVectors(doorA.pos, doorB.pos).normalize();
     if (this.doorNormal.lengthSq() < 1e-6) this.doorNormal.set(0, 0, 1);
 
-    const doorGeo = new THREE.CircleGeometry(this.config.game.doorRadius, 6);
-    const doorMat = new THREE.MeshBasicMaterial({
-      color: this.config.colors.door, transparent: true, opacity: 0.55, side: THREE.DoubleSide,
-    });
-    this.doorMesh = new THREE.Mesh(doorGeo, doorMat);
+    const spec = field.architecture?.find(s => s.kind === 'gate');
+    if (spec) {
+      this.doorPos.copy(spec.position); this.doorNormal.copy(spec.normal);
+      this.doorAssembly = buildSecurityFrame(spec); this.scene.add(this.doorAssembly);
+    }
+    // An exceptionally crowded graph may have no safe structural seat. Keep its
+    // original optical gate and mission plane; never add an unvalidated frame.
+    this.doorMesh = buildEnergyField(spec?.inner ?? this.config.built.tunnelRadius, this.config.colors.door);
     this.doorMesh.position.copy(this.doorPos);
     this.doorMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), this.doorNormal);
     this.scene.add(this.doorMesh);
@@ -152,12 +154,12 @@ export class GameState {
       this.keyMesh.position.y = this.keyBasePos.y + Math.sin(this.time * 1.6) * 0.6;
     }
     if (this.doorMesh) {
-      this.doorMesh.rotateZ(dt * 0.6);
       if (this.doorLocked) {
         this.doorMesh.material.opacity = 0.45 + Math.sin(this.time * 3) * 0.18;
       } else {
         this.doorFadeTimer -= dt;
-        this.doorMesh.material.opacity = Math.max(0, this.doorFadeTimer) * 0.55;
+        if (this.doorAssembly) this.doorAssembly.userData.setOpenFraction(1 - this.doorFadeTimer, this.doorMesh);
+        else this.doorMesh.material.opacity = Math.max(0, this.doorFadeTimer) * .55;
         if (this.doorFadeTimer <= 0) {
           this.scene.remove(this.doorMesh);
           this.doorMesh.geometry.dispose();
@@ -277,6 +279,11 @@ export class GameState {
       this.doorMesh.geometry.dispose();
       this.doorMesh.material.dispose();
       this.doorMesh = null;
+    }
+    if (this.doorAssembly) {
+      this.scene.remove(this.doorAssembly);
+      this.doorAssembly.userData.dispose();
+      this.doorAssembly = null;
     }
     if (this.exitMesh) {
       this.scene.remove(this.exitMesh);

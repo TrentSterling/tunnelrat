@@ -1,0 +1,108 @@
+{
+  "source": "task-7/review-camera-corrected/worst-retraction.json",
+  "rejectedCommit": "5aba228cdab3bd8b1cfbb978a101d11bc5224d1b",
+  "cases": [
+    {
+      "aspect": 1.7777777777777777,
+      "shake": 1.5,
+      "radius": 0.6742640687119286,
+      "fixture": {
+        "seed": 165,
+        "depth": 1,
+        "p": [
+          80.59656414175605,
+          -102.7930039438882,
+          -1.3631749234609487
+        ],
+        "q": [
+          -0.49285425010175177,
+          0.3448452843409789,
+          0.563223647510618,
+          -0.566529382211783
+        ],
+        "velocity": [
+          22.337544356438826,
+          25.632676647672355,
+          17
+        ],
+        "before": 5.936422435861804,
+        "after": 1.5000000000000002,
+        "reduction": 4.436422435861804,
+        "shipClearance": 2.400000000000004
+      },
+      "productionDistance": 1.5000000000000002,
+      "productionModelVisible": false,
+      "rockFieldWithSameExactMeshIndexDistance": 6.512770090640549,
+      "minStaticTriangleClearance": 0.9219725900329178,
+      "minRockClearance": 2.959511363941718
+    },
+    {
+      "aspect": 3.5555555555555554,
+      "shake": 0,
+      "radius": 0.31536847924125266,
+      "fixture": {
+        "seed": 165,
+        "depth": 1,
+        "p": [
+          80.59656414175605,
+          -102.7930039438882,
+          -1.3631749234609487
+        ],
+        "q": [
+          -0.49285425010175177,
+          0.3448452843409789,
+          0.563223647510618,
+          -0.566529382211783
+        ],
+        "velocity": [
+          22.337544356438826,
+          25.632676647672355,
+          17
+        ],
+        "before": 5.936422435861804,
+        "after": 2.2,
+        "reduction": 3.7364224358618037,
+        "shipClearance": 2.400000000000004
+      },
+      "productionDistance": 2.2,
+      "productionModelVisible": true,
+      "rockFieldWithSameExactMeshIndexDistance": 6.512770090640549,
+      "minStaticTriangleClearance": 0.9219725900329178,
+      "minRockClearance": 2.959511363941718
+    },
+    {
+      "aspect": 3.5555555555555554,
+      "shake": 1.5,
+      "radius": 0.7396325479531813,
+      "fixture": {
+        "seed": 165,
+        "depth": 1,
+        "p": [
+          80.59656414175605,
+          -102.7930039438882,
+          -1.3631749234609487
+        ],
+        "q": [
+          -0.49285425010175177,
+          0.3448452843409789,
+          0.563223647510618,
+          -0.566529382211783
+        ],
+        "velocity": [
+          22.337544356438826,
+          25.632676647672355,
+          17
+        ],
+        "before": 5.936422435861804,
+        "after": 1.4000000000000001,
+        "reduction": 4.5364224358618035,
+        "shipClearance": 2.400000000000004
+      },
+      "productionDistance": 1.4000000000000001,
+      "productionModelVisible": false,
+      "rockFieldWithSameExactMeshIndexDistance": 6.512770090640549,
+      "minStaticTriangleClearance": 0.9219725900329178,
+      "minRockClearance": 2.959511363941718
+    }
+  ]
+}

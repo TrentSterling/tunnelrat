@@ -1,5 +1,6 @@
-// density.js : the cave as a signed scalar field. This field IS the level geometry
-// source (marching cubes samples it) AND the physics world (SDF collision + LOS).
+// density.js : cave carving plus authored architecture. The returned field combines
+// rock and frame collision; renderField contains rock recesses for marching cubes.
+// The separately rendered frame meshes share the collision section data.
 //
 // SIGN CONVENTION (critical, everything depends on it):
 //   sample(x,y,z) < 0  : open air (inside carved cave)
@@ -63,6 +64,7 @@
 import * as THREE from 'three';
 import { makeRng, randRange } from '../util/rng.js';
 import { makeNoise3D, fbm3 } from '../util/noise.js';
+import { addArchitectureField } from './architecture-layout.js';
 
 const BASE = 4; // solid rock value far from any carving
 
@@ -355,11 +357,11 @@ export function createDensityField(graph, seed, config, biome) {
     shape: n.shape || 'sphere',
   }));
 
-  return {
+  return addArchitectureField({
     sample,
     collisionNormal,
     raycast,
     bounds: { min, max },
     decor: { edges: decorEdges, rooms: decorRooms, seed },
-  };
+  }, graph, config);
 }

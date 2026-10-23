@@ -26,33 +26,10 @@
 import * as THREE from 'three';
 import { makeRng, randRange, randInt } from '../util/rng.js';
 import { grungeTexture } from '../util/grungetex.js';
+import { buildEntryFrames } from '../architecture-model.js';
+import { frameLocal } from './architecture-layout.js';
 
 // ---------- module-scope shared textures + materials ----------
-
-let _hazardTex = null;
-function hazardTexture() {
-  if (_hazardTex) return _hazardTex;
-  const size = 64;
-  const canvas = document.createElement('canvas');
-  canvas.width = canvas.height = size;
-  const ctx = canvas.getContext('2d');
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const stripe = ((x + y) >> 3) % 2 === 0;
-      ctx.fillStyle = stripe ? '#e8b520' : '#16161c';
-      ctx.fillRect(x, y, 1, 1);
-    }
-  }
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.magFilter = THREE.NearestFilter;
-  tex.minFilter = THREE.NearestFilter;
-  tex.generateMipmaps = false;
-  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.repeat.set(8, 1); // torus u runs around the ring; ~16 stripe alternations
-  _hazardTex = tex;
-  return tex;
-}
 
 let _mats = null;
 function getMats(config) {
@@ -68,10 +45,7 @@ function getMats(config) {
     stripAmber: new THREE.MeshBasicMaterial({ color: c.stripAmber }),
     stripCyan: new THREE.MeshBasicMaterial({ color: c.stripCyan }),
     stripRed: new THREE.MeshBasicMaterial({ color: c.stripRed }),
-    hazard: new THREE.MeshLambertMaterial({
-      map: hazardTexture(), emissive: 0xffffff, emissiveMap: hazardTexture(),
-      emissiveIntensity: 0.5, flatShading: true,
-    }),
+
   };
   return _mats;
 }
@@ -128,6 +102,12 @@ export function buildDecor(field, graph, config) {
   const group = new THREE.Group();
   group.name = 'decorGroup';
   const mats = getMats(config);
+  group.add(buildEntryFrames(field.architecture || []));
+  const local = [0, 0, 0];
+  const nearAssembly = (p, margin = 8) => (field.architecture || []).some(s => {
+    frameLocal(s, p.x, p.y, p.z, local);
+    return Math.abs(local[2]) < 1.1 + margin && Math.hypot(local[0], local[1]) < s.recessRadius;
+  });
   const built = config.built || {};
   const rng = makeRng((field.decor.seed ^ 0xdec0) >>> 0);
 
@@ -152,6 +132,7 @@ export function buildDecor(field, graph, config) {
     // rib rings every ~ribSpacing meters, skipping stretches inside the end rooms
     walkPolyline(edge.polyline, ribSpacing, (p, dir) => {
       if (p.distanceTo(roomA.pos) < clearA || p.distanceTo(roomB.pos) < clearB) return;
+      if (nearAssembly(p)) return;
       _quat.setFromUnitVectors(_Z, dir);
       composeInto(ribMatrices, p, _quat, 1, 1, 1);
     });
@@ -170,6 +151,7 @@ export function buildDecor(field, graph, config) {
       _pt.lerpVectors(a, b, 0.5);
       if (_pt.distanceTo(roomA.pos) < clearA || _pt.distanceTo(roomB.pos) < clearB) continue;
 
+      if (nearAssembly(_pt, len / 2 + 8)) continue;
       const upRef = Math.abs(_segDir.y) > 0.95 ? _X : _Y;
       _side.crossVectors(_segDir, upRef).normalize();
       _upv.crossVectors(_side, _segDir).normalize();
@@ -192,26 +174,6 @@ export function buildDecor(field, graph, config) {
   if (stripMatrices.amber.length > 0) group.add(makeInstanced(stripGeo, mats.stripAmber, stripMatrices.amber, 'decor-strips-amber'));
   if (stripMatrices.cyan.length > 0) group.add(makeInstanced(stripGeo, mats.stripCyan, stripMatrices.cyan, 'decor-strips-cyan'));
   if (stripMatrices.red.length > 0) group.add(makeInstanced(stripGeo, mats.stripRed, stripMatrices.red, 'decor-strips-red'));
-
-  // ---------- hazard-striped door frame at the locked edge midpoint ----------
-  // Matches gamestate.js door disc placement exactly: straight-line midpoint of the
-  // locked edge, normal along (a - b). The locked edge carve is dead straight
-  // (density.js) so the frame sits inside the corridor.
-  {
-    const a = roomById.get(graph.lockedEdge.a);
-    const b = roomById.get(graph.lockedEdge.b);
-    if (a && b) {
-      const frameGeo = new THREE.TorusGeometry(builtR * 1.0, 0.85, 4, 12);
-      const frame = new THREE.Mesh(frameGeo, mats.hazard);
-      frame.position.addVectors(a.pos, b.pos).multiplyScalar(0.5);
-      _segDir.subVectors(a.pos, b.pos).normalize();
-      frame.quaternion.setFromUnitVectors(_Z, _segDir);
-      frame.name = 'decor-doorframe';
-      frame.matrixAutoUpdate = false;
-      frame.updateMatrix();
-      group.add(frame);
-    }
-  }
 
   // ---------- built rooms: wall panels, ceiling fixture, floor trim, lights ----------
   const panelMatrices = [];

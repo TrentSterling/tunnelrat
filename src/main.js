@@ -18,6 +18,7 @@ import { MatrixView } from './matrix.js';
 import { makeRng } from './util/rng.js';
 import { CheatConsole } from './console.js';
 import { BuddyBot } from './buddybot.js';
+import { ChaseCamera, CHASE_OFFSET } from './chase-camera.js';
 
 const app = document.getElementById('app');
 const loadingEl = document.getElementById('loading');
@@ -103,12 +104,8 @@ scene.add(flashMesh);
 // the ship toward the screen edges instead of it staying pinned dead-center.
 let thirdPerson = false;
 let playerShipModel = null;
-const CHASE_OFFSET = new THREE.Vector3(0, 1.9, 6.2); // local to ship: up + behind
-const _chaseWorld = new THREE.Vector3();
 const _chaseLocal = new THREE.Vector3();
-const _chaseOffsetTarget = new THREE.Vector3();
-const _chaseLocalVel = new THREE.Vector3();
-const _chaseInvQuat = new THREE.Quaternion();
+let chaseCamera = null;
 
 function ensurePlayerShipModel() {
   if (playerShipModel) return;
@@ -142,25 +139,14 @@ function applyCameraMode() {
 }
 
 function updateChaseCam(dt) {
-  // pull the camera in when the chase offset would sit inside rock
-  let t = 1;
-  for (const tryT of [1, 0.75, 0.5, 0.32]) {
-    t = tryT;
-    _chaseLocal.copy(CHASE_OFFSET).multiplyScalar(tryT);
-    _chaseWorld.copy(_chaseLocal).applyQuaternion(ship.object3d.quaternion).add(ship.object3d.position);
-    if (level.field.sample(_chaseWorld.x, _chaseWorld.y, _chaseWorld.z) < -0.8) break;
-  }
-  _chaseOffsetTarget.copy(CHASE_OFFSET).multiplyScalar(t);
-
-  // velocity lean: world velocity -> ship-local space, shift the offset opposite it
-  // (clamped 0.6m) so the ship drifts toward the screen edges under thrust
-  _chaseInvQuat.copy(ship.object3d.quaternion).invert();
-  _chaseLocalVel.copy(ship.velocity).applyQuaternion(_chaseInvQuat).multiplyScalar(-1);
-  if (_chaseLocalVel.length() > 0.6) _chaseLocalVel.setLength(0.6);
-  _chaseOffsetTarget.add(_chaseLocalVel);
-
-  // damped follow: exponential smoothing, not an instant snap
-  camRig.position.lerp(_chaseOffsetTarget, 1 - Math.exp(-dt * 8));
+  if (!chaseCamera) return;
+  const nearHeight = camera.near * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+  const radius = Math.max(.25, Math.hypot(camera.near, nearHeight, nearHeight * camera.aspect)) + shake * .2 * Math.SQRT2;
+  chaseCamera.update(camRig.position, dt, ship.object3d.position, ship.object3d.quaternion, ship.velocity, radius);
+  // Hide immediately at the safety boundary. Restore only after another 20cm
+  // of clearance so small motion or shake cannot flicker the exterior model.
+  const hideDistance = CONFIG.ship.radius + radius + .1;
+  playerShipModel.visible = camRig.position.length() > hideDistance + (playerShipModel.visible ? 0 : .2);
 }
 
 function startDeathCinematic() {
@@ -210,6 +196,7 @@ function clearWreck() {
 }
 
 function disposeLevel() {
+  chaseCamera = null;
   if (!level) return;
   scene.remove(level.caveGroup);
   level.caveGroup.traverse((o) => { if (o.geometry) o.geometry.dispose(); });
@@ -266,6 +253,9 @@ function loadLevel(newSeed, newDepth) {
 
     if (!gamestate) gamestate = new GameState(scene, CONFIG);
     gamestate.startLevel(level.graph, level.field, depth);
+    chaseCamera = new ChaseCamera(level.field, [
+      level.caveGroup.getObjectByName('decorGroup'), level.caveGroup.getObjectByName('propsGroup'), gamestate.doorAssembly,
+    ]);
 
     if (!deathsite) deathsite = new DeathSite(scene);
     deathsite.buildProps(seed, depth);

@@ -1,0 +1,21 @@
+<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;background:#10151c;overflow:hidden}</style>
+<script type="importmap">{"imports":{"three":"/three/build/three.module.js"}}</script></head><body>
+<script type="module">
+// Isolated static asset inspection. No game, input handlers, animation loop,
+// media, audio, focus or pointer APIs are loaded or called.
+import * as T from 'three';
+import {buildSecurityFrame} from '/src/architecture-model.js';
+import {frameSpec} from '/src/procgen/architecture-layout.js';
+const renderer=new T.WebGLRenderer({antialias:false,preserveDrawingBuffer:true});
+renderer.setSize(1000,700);document.body.appendChild(renderer.domElement);
+const scene=new T.Scene();scene.background=new T.Color('#10151c');
+const frame=buildSecurityFrame(frameSpec('gate',new T.Vector3(),new T.Vector3(0,0,1),5.2));scene.add(frame);
+scene.add(new T.AmbientLight(0xffffff,2));
+const light=new T.DirectionalLight(0xffffff,2);light.position.set(2,3,6);scene.add(light);
+const camera=new T.PerspectiveCamera(32,1000/700,.01,100);
+window.renderView=(angle,diagnostic=false)=>{
+  camera.position.set(5.43+Math.sin(angle)*.6,.13,1.1+Math.cos(angle)*.6);
+  camera.lookAt(5.43,0,1.1);frame.getObjectByName('load-bearing-shell').visible=!diagnostic;
+  renderer.render(scene,camera);return {pointerLocked:!!document.pointerLockElement,angle,diagnostic};
+};window.renderView(.2);window.ready=true;
+</script></body></html>

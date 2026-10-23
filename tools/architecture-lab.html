@@ -1,0 +1,17 @@
+<!doctype html><meta charset="utf-8"><title>TUNNELRAT pressure-frame reference</title>
+<style>body{margin:0;background:#10161d;color:#cad4da;font:13px monospace}canvas{display:block}header{position:absolute;top:16px;left:24px;letter-spacing:2px}label{position:absolute;color:#9aabb7}#a{top:54px;left:24px}#b{top:54px;left:664px}#c{top:392px;left:24px}#d{top:392px;left:664px}footer{position:absolute;bottom:12px;left:24px;color:#9aabb7}</style>
+<header>TUNNELRAT / ORIGINAL PRESSURE-FRAME FAMILY</header><label id="a">FRONT / POWERED</label><label id="b">SIDE / 2.2 m DEPTH</label><label id="c">REAR QUARTER</label><label id="d">FRONT QUARTER</label><footer>Same game geometry and materials. 10.4 m clear gate opening; static entries accommodate the full 15.6 m mouth flare.</footer>
+<script type="importmap">{"imports":{"three":"https://esm.sh/three@0.179.0"}}</script>
+<script type="module">
+import * as THREE from 'three';
+import {buildSecurityFrame,buildEnergyField} from '../src/architecture-model.js';
+import {frameSpec} from '../src/procgen/architecture-layout.js';
+const renderer=new THREE.WebGLRenderer({antialias:true});renderer.setSize(1280,720);renderer.setPixelRatio(1);renderer.toneMapping=THREE.ACESFilmicToneMapping;document.body.append(renderer.domElement);
+const scene=new THREE.Scene();scene.background=new THREE.Color(0x10161d);scene.add(new THREE.HemisphereLight(0xc6e3f5,0x4b3c2d,2));
+for(const [pos,color,intensity] of [[[3,6,5],0xffffff,2.8],[[-4,2,-3],0x82b9df,2]]){const l=new THREE.DirectionalLight(color,intensity);l.position.set(...pos);scene.add(l);}
+const group=buildSecurityFrame(frameSpec('gate',new THREE.Vector3(),new THREE.Vector3(0,0,1),5.2));scene.add(group);
+const field=buildEnergyField(5.2,0xff3030);scene.add(field);
+const views=[[0,0,30],[30,0,0],[-15,9,-22],[15,9,22]];
+function render(){renderer.setScissorTest(true);for(let i=0;i<4;i++){const camera=new THREE.OrthographicCamera(-15.15,15.15,8,-8,.1,80);camera.position.set(...views[i]);camera.lookAt(0,0,0);renderer.setViewport(i%2*640,i<2?360:22,640,338);renderer.setScissor(i%2*640,i<2?360:22,640,338);renderer.render(scene,camera);}}
+render();window.LAB={group,render,ready:true,setOpenFraction:t=>{group.userData.setOpenFraction(t,field);render();}};
+</script>
