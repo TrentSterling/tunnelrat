@@ -143,9 +143,10 @@ function updateChaseCam(dt) {
   const nearHeight = camera.near * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
   const radius = Math.max(.25, Math.hypot(camera.near, nearHeight, nearHeight * camera.aspect)) + shake * .2 * Math.SQRT2;
   chaseCamera.update(camRig.position, dt, ship.object3d.position, ship.object3d.quaternion, ship.velocity, radius);
-  // Hide the exterior model when the constrained viewpoint is inside its hull;
-  // retain chase mode and restore the model as soon as there is room again.
-  playerShipModel.visible = camRig.position.length() > CONFIG.ship.radius + radius + .1;
+  // Hide immediately at the safety boundary. Restore only after another 20cm
+  // of clearance so small motion or shake cannot flicker the exterior model.
+  const hideDistance = CONFIG.ship.radius + radius + .1;
+  playerShipModel.visible = camRig.position.length() > hideDistance + (playerShipModel.visible ? 0 : .2);
 }
 
 function startDeathCinematic() {

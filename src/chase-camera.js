@@ -5,6 +5,10 @@ import * as THREE from 'three';
 export const CHASE_OFFSET = new THREE.Vector3(0, 1.9, 6.2);
 const SKIN = .002;
 const ROCK_STEP = .1;
+// Keep the original 0.8m allowance for a 0.25m camera volume. The remainder
+// accounts for density / marching-cubes disagreement and must also be retained
+// when shake or a wider near plane enlarges the camera volume.
+const ROCK_RENDER_MARGIN = .55;
 
 export class ChaseCamera {
   constructor(field, roots = []) {
@@ -63,7 +67,7 @@ export class ChaseCamera {
     let limit = length;
     // Retain the old 0.8m rock margin and add tolerance between samples.
     // This is the game's approximate density, not a new collider.
-    const clearance = Math.max(.8, radius) + ROCK_STEP;
+    const clearance = Math.max(.8, radius + ROCK_RENDER_MARGIN) + ROCK_STEP;
     for (let t = 0; ; t = Math.min(length, t + ROCK_STEP)) {
       this.ray.at(t, this.point);
       if (this.field.sample(this.point.x, this.point.y, this.point.z) >= -clearance) {

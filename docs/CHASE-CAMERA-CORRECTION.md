@@ -1,5 +1,11 @@
 # Chase camera obstruction correction
 
+Independent review rejected `9b55e4a` for ship-visibility flicker and two shaken
+near-plane intersections with rendered rock. The static checks below were
+insufficient. See `CHASE-CAMERA-REVIEW-CORRECTION.md` for the focused follow-up
+and production-update regression evidence; re-review and GPU validation remain
+pending.
+
 Local review candidate based on approved release
 `ff9f90ed3b6a9e19a4a7247933195f7acd6eee39`. That release checkout and its pending
 publication remain unchanged. This pass is not published or visually approved.
